@@ -28,6 +28,7 @@ COPY sample ./sample
 ENV VLLM_BASE_URL=http://vllm:8000/v1 \
     MODEL_NAME=nemotron-nano-9b-v2 \
     POLICY_DIR=/data/policy_store \
+    AUDIT_DIR=/data/audit_store \
     API_PORT=5244
 
 EXPOSE 5244

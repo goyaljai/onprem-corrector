@@ -69,8 +69,13 @@ services:
       MODEL_NAME: ${MODEL_NAME:-nemotron-nano-9b-v2}
       POLICY_DIR: /data/policy_store
       API_PORT: 5244
+      AUDIT_DIR: /data/audit_store              # tamper-evident audit log persists here
+      AUDIT_STORE_MODE: ${AUDIT_STORE_MODE:-redacted}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-0}
+      AUDIT_API_KEY: ${AUDIT_API_KEY:-}         # set to enable the /v1/audit* read endpoints
     volumes:
       - corrector_policy:/data/policy_store   # Chroma index survives restarts
+      - corrector_audit:/data/audit_store     # audit chain survives restarts (compliance evidence)
     ports:
       - "5244:5244"
     depends_on:
@@ -80,3 +85,4 @@ services:
 volumes:
   hfcache:            # Hugging Face weight cache (populated on first `up`)
   corrector_policy:   # Chroma policy index
+  corrector_audit:    # tamper-evident audit chain (compliance evidence)

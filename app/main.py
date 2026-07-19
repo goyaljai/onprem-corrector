@@ -10,26 +10,70 @@ egress, which is the whole point (data residency).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import time
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException, Query, Depends
 from openai import OpenAI
 
 from .schema import AnalyzeRequest, AnalyzeResponse, Observation, UploadResponse
 from . import rag_index
 from .rules import instant_lane, disclosure_anchors
 from .judge import judge
+from .audit import get_audit
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "nemotron-nano-9b-v2")
 POLICY_DIR = os.environ.get("POLICY_DIR", "./policy_store")
 GUARDRAILS_DIR = os.path.join(os.path.dirname(__file__), "guardrails")
+# Read-side guard for the SENSITIVE audit endpoints (they can expose transcripts). If unset,
+# the audit READ API is disabled entirely — a safe default until full auth (issue #2) lands.
+AUDIT_API_KEY = os.environ.get("AUDIT_API_KEY", "")
+DOCS_ENABLED = os.environ.get("DOCS_ENABLED", "true").lower() != "false"
 
-app = FastAPI(title="On-prem Policy-Compliance Guardrail", version="0.1.0")
+# --- OpenAPI / Swagger surface (issue #4): self-describing API, grouped by tag ---------
+TAGS = [
+    {"name": "compliance", "description": "Judge an agent utterance against the indexed policy (A/B/C verdicts, verdict-only)."},
+    {"name": "policy", "description": "Manage the grounding policy/SOP and its derived anchors."},
+    {"name": "audit", "description": "Tamper-evident audit trail — query, integrity verification, and stats (key-gated)."},
+    {"name": "ops", "description": "Liveness and operational endpoints."},
+]
+app = FastAPI(
+    title="On-prem Policy-Compliance Guardrail",
+    version="0.2.0",
+    description=(
+        "A self-hosted, **zero-egress** compliance corrector for AI/human agents. Detects "
+        "policy breaches (A), self-contradiction (B), and tone misses (C), grounded in *your* "
+        "uploaded SOP, talking only to a **local** vLLM. Every decision is written to a "
+        "**tamper-evident audit trail**.\n\n"
+        "Explore live below, or fetch the machine spec at `/openapi.json`."
+    ),
+    openapi_tags=TAGS,
+    contact={"name": "onprem-corrector", "url": "https://github.com/goyaljai/onprem-corrector"},
+    license_info={"name": "MIT"},
+    docs_url="/docs" if DOCS_ENABLED else None,
+    redoc_url="/redoc" if DOCS_ENABLED else None,
+)
 client = OpenAI(base_url=VLLM_BASE_URL, api_key="dummy")
+
+
+def _require_audit_key(x_api_key: str | None = Header(default=None)):
+    """Guard the audit read endpoints. Disabled (403) unless AUDIT_API_KEY is configured."""
+    if not AUDIT_API_KEY:
+        raise HTTPException(status_code=403, detail="Audit API disabled: set AUDIT_API_KEY to enable.")
+    if x_api_key != AUDIT_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key.")
+
+
+def _corr_dicts(corrections) -> list:
+    """Normalise Correction models (or dicts) to plain dicts for the audit record."""
+    out = []
+    for c in corrections:
+        out.append(c.model_dump() if hasattr(c, "model_dump") else dict(c))
+    return out
 
 # NeMo Guardrails is loaded lazily/optionally so the service still runs if the
 # rails config can't initialise — the deterministic input gate below is authoritative.
@@ -88,10 +132,11 @@ def _startup():
                     rag_index.index_handbook(f.read(), f"v-default-{int(time.time())}")
     except Exception:
         pass  # never block startup on the default-load
+    get_audit()   # initialise the audit chain (loads/creates _chain.json)
     _get_rails()  # warm it
 
 
-@app.get("/healthz")
+@app.get("/healthz", tags=["ops"], summary="Liveness + vLLM reachability + policy version")
 def healthz():
     ok = True
     try:
@@ -103,7 +148,8 @@ def healthz():
             "policy_version": meta.get("version"), "nemo_guardrails": bool(_get_rails())}
 
 
-@app.post("/v1/policy/upload", response_model=UploadResponse)
+@app.post("/v1/policy/upload", response_model=UploadResponse, tags=["policy"],
+          summary="Index a policy/SOP markdown (replaces the current policy)")
 async def upload_policy(request: Request):
     # Accept the raw policy markdown as the request body (text/plain OR application/json string).
     raw = (await request.body()).decode("utf-8")
@@ -113,13 +159,20 @@ async def upload_policy(request: Request):
             raw = _json.loads(raw)
         except Exception:
             pass
+    prev = rag_index.load_policy_meta().get("version")
     version = f"v{int(time.time())}"
     n, prohibited, disclosures = rag_index.index_handbook(raw, version)
+    # AUDIT: a policy change is a compliance-relevant event. Record version transition +
+    # a hash of the policy body (not the body itself) so the change is provable, not bulky.
+    get_audit().record("policy_upload", policy_version=version, model=MODEL_NAME,
+                       extra={"prev_version": prev, "policy_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+                              "chunks": n, "prohibited": len(prohibited), "disclosures": len(disclosures)})
     return UploadResponse(policy_version=version, chunks_indexed=n,
                           prohibited_phrases=len(prohibited), required_disclosures=len(disclosures))
 
 
-@app.get("/v1/policy/anchors")
+@app.get("/v1/policy/anchors", tags=["policy"],
+         summary="SOP-derived disclosure anchors + prohibited phrases (read-only, no LLM)")
 def policy_anchors():
     """Expose the SOP-derived disclosure ANCHORS (#35) so an external compliance check —
     e.g. the voice-copilot C1 identity matcher — can consume policy-grounded signals instead
@@ -136,19 +189,25 @@ def policy_anchors():
     }
 
 
-@app.post("/v1/corrector/analyze", response_model=AnalyzeResponse)
+@app.post("/v1/corrector/analyze", response_model=AnalyzeResponse, tags=["compliance"],
+          summary="Judge one agent utterance → corrections[] (A/B/C, verdict-only)")
 def analyze(req: AnalyzeRequest):
     t0 = time.time()
     meta = rag_index.load_policy_meta()
 
     # 1. input guardrail (deterministic fast path)
     if _has_secrets(req.agent_utterance):
+        latency = int((time.time()-t0)*1000)
+        get_audit().record("input_block", policy_version=meta.get("version"), model=MODEL_NAME,
+                           lanes=["input_guard"], latency_ms=latency,
+                           utterance=req.agent_utterance, context=req.context,
+                           prior=req.prior_agent_claims or "", extra={"blocked": True})
         return AnalyzeResponse(
             observations=[Observation(id=f"blk_{uuid.uuid4().hex[:6]}", category="input_guardrail",
                                       severity=3, observation="Input blocked by guardrail (possible secret/injection).",
                                       evidence=None)],
             corrections=[], rubric_projection=None,
-            meta={"latency_ms": int((time.time()-t0)*1000), "model": MODEL_NAME,
+            meta={"latency_ms": latency, "model": MODEL_NAME,
                   "policy_version": meta.get("version"), "lanes": ["input_guard"], "blocked": True})
 
     # 2. instant lane (deterministic, no LLM)
@@ -167,8 +226,34 @@ def analyze(req: AnalyzeRequest):
     except Exception as e:  # never crash the caller's call — return what we have
         judge_error = str(e)
 
+    latency = int((time.time()-t0)*1000)
+    # AUDIT: persist the verdict to the tamper-evident chain BEFORE returning, so no decision
+    # is ever unrecorded. Transcripts are scrubbed per AUDIT_STORE_MODE inside the audit layer.
+    get_audit().record("analyze", policy_version=meta.get("version"), model=MODEL_NAME,
+                       lanes=lanes, latency_ms=latency,
+                       utterance=req.agent_utterance, context=req.context,
+                       prior=req.prior_agent_claims or "", corrections=_corr_dicts(corrections))
+
     return AnalyzeResponse(
         observations=[], corrections=corrections, rubric_projection=None,
-        meta={"latency_ms": int((time.time()-t0)*1000), "model": MODEL_NAME,
+        meta={"latency_ms": latency, "model": MODEL_NAME,
               "policy_version": meta.get("version"), "lanes": lanes,
               "judge_error": judge_error})
+
+
+# ------------------------------------------------------------------- audit trail (#1)
+@app.get("/v1/audit", tags=["audit"], summary="Query recent audit records (key-gated)")
+def audit_query(limit: int = Query(50, ge=1, le=1000), event: str | None = None,
+                since_seq: int = 0, _auth=Depends(_require_audit_key)):
+    return {"records": get_audit().query(limit=limit, event=event, since_seq=since_seq)}
+
+
+@app.get("/v1/audit/verify", tags=["audit"],
+         summary="Recompute the hash chain → integrity proof (ok / broken_at)")
+def audit_verify(_auth=Depends(_require_audit_key)):
+    return get_audit().verify()
+
+
+@app.get("/v1/audit/stats", tags=["audit"], summary="Aggregate counts by event / gate / source")
+def audit_stats(_auth=Depends(_require_audit_key)):
+    return get_audit().stats()

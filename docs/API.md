@@ -3,6 +3,10 @@
 Base URL: `http://<host>:${API_PORT:-5244}`. Stateless; JSON in/out. On error the service returns a
 well-formed empty body (or a 4xx/5xx) — it never crashes the caller.
 
+**Explore it live:** interactive **Swagger UI** at [`/docs`](/docs), **ReDoc** at [`/redoc`](/redoc), and
+the machine-readable spec at [`/openapi.json`](/openapi.json) (endpoints grouped by tag: `compliance`,
+`policy`, `audit`, `ops`). Disable with `DOCS_ENABLED=false` for locked-down deployments.
+
 ## `GET /healthz`
 ```json
 { "status": "ok", "vllm": true, "model": "nemotron-nano-9b-v2",
@@ -70,3 +74,33 @@ check can consume policy-grounded signals instead of a hardcoded phrase list.
 ## Default policy
 If nothing has been uploaded, the service **auto-loads a bundled sample SOP** on startup, so
 `/analyze` and `/anchors` work out-of-the-box. `POST /v1/policy/upload` replaces it.
+
+## Audit trail (tamper-evident)
+Every `analyze` verdict, `policy_upload`, and `input_block` is written to an **append-only,
+hash-chained** log (`sha256(prev_hash + record)`), verifiable **offline**. Transcripts are scrubbed
+per `AUDIT_STORE_MODE` (`redacted` default · `hashed` · `full`); retention prunes whole old segments
+(`AUDIT_RETENTION_DAYS`). The read endpoints below require the `X-API-Key` header matching
+`AUDIT_API_KEY` — **if that env is unset the audit read API returns 403** (safe default).
+
+### `GET /v1/audit?limit=&event=&since_seq=`
+Recent audit records (newest-trimmed to `limit`). `event` ∈ `analyze|policy_upload|input_block`.
+```json
+{ "records": [ {
+  "seq": 12, "ts": "2026-07-19T15:30:00.123Z", "event": "analyze",
+  "policy_version": "v-default-…", "model": "nemotron-nano-9b-v2",
+  "lanes": ["instant","rag_judge"], "latency_ms": 2296,
+  "input": { "utterance": "the late fee is [REDACTED:…]", "sha256": "…64hex…" },
+  "corrections": [ { "source": "A", "gate": "auto", "confidence": 1.0, "reason": "…" } ],
+  "outcome": { "n_corrections": 1, "sources": ["A"], "gates": {"auto":1}, "blocked": false },
+  "prev_hash": "…64hex…", "hash": "…64hex…" } ] }
+```
+
+### `GET /v1/audit/verify`
+Recompute the whole retained chain → integrity proof.
+```json
+{ "ok": true, "checked": 12, "first_seq": 1, "last_seq": 12, "head_hash": "…", "pruned": null }
+// on tampering: { "ok": false, "broken_at": 7, "reason": "content altered", "checked": 6 }
+```
+
+### `GET /v1/audit/stats`
+`{ "records", "last_seq", "by_event", "by_gate", "by_source", "pruned" }` — feeds a compliance dashboard.

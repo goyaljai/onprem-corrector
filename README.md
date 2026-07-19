@@ -89,6 +89,8 @@ flowchart LR
 - 📚 **Policy-grounded, not vibes** — every verdict is retrieved from *your* uploaded SOP (RAG), with a citation.
 - ⚡ **Two-speed detection** — sub-ms deterministic rules + a single grounded LLM call; the gate keeps LLM guesses honest.
 - 🧯 **Safe by construction** — verdict-only, confidence-gated, quote-required for auto-actions; graceful degradation (bounded inputs, per-finding isolation) so one bad response never sinks the batch.
+- 🧾 **Tamper-evident audit trail** — every verdict/policy-change is hash-chained (append-only), PII-redacted, retention-configurable, and verifiable **offline** (`GET /v1/audit/verify` pin-points any tampering). Compliance evidence, not a promise.
+- 📖 **Self-describing API** — interactive Swagger UI at `/docs`, ReDoc at `/redoc`, spec at `/openapi.json`.
 - 📦 **Runs out-of-the-box** — ships a default sample SOP and auto-loads it, so `/analyze` works before you upload anything.
 - ☁️ **Deploy anywhere** — Docker Compose · Kubernetes · GCP / AWS / Azure recipes; weights mounted or pulled at runtime, never baked into an image; no secrets in the repo.
 - ✅ **Proven** — bundled adversarial packs (bank · hospital · IT) with planted mistakes; a GPU-free unit test; verified end-to-end on H100.
@@ -162,8 +164,10 @@ KYC, IT-support MFA policy, legal disclaimers… if it has an SOP, it works.
 | `POST /v1/policy/upload` | index your SOP markdown (RAG + extract phrases/disclosures) |
 | `POST /v1/corrector/analyze` | judge one utterance → `{observations, corrections[], rubric_projection}` |
 | `GET /v1/policy/anchors` | SOP-derived disclosure anchors (reuse them in your own identity checks) |
+| `GET /v1/audit` · `/verify` · `/stats` | tamper-evident audit trail — query, integrity proof, stats (key-gated) |
+| `GET /docs` · `/redoc` · `/openapi.json` | interactive **Swagger UI** / ReDoc / machine spec — the API describes itself |
 
-Full request/response shapes → [`docs/API.md`](docs/API.md).
+Full request/response shapes → [`docs/API.md`](docs/API.md), or just open **`/docs`** on a running instance.
 
 ## Deploy anywhere
 
