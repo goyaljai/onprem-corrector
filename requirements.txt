@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+openai
+chromadb
+nemoguardrails
+pydantic>=2

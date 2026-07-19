@@ -1,0 +1,140 @@
+# On-prem corrector on Kubernetes (GPU node pool + NVIDIA device plugin required).
+# Model weights are NEVER in the image or the repo. Provide them one of two ways:
+#   (A) mount    — a PVC/hostPath preloaded with the weights (default below), or
+#   (B) HF pull  — an initContainer that downloads the model at startup (see deploy/README.md).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: corrector-config
+data:
+  MODEL_NAME: "nemotron-nano-9b-v2"
+  VLLM_BASE_URL: "http://vllm:8000/v1"
+  POLICY_DIR: "/data/policy_store"
+  API_PORT: "5244"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-weights          # (A) preload this PVC with the weights out-of-band
+spec:
+  accessModes: ["ReadOnlyMany"]
+  resources:
+    requests:
+      storage: 40Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  labels:
+    app: vllm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          args:
+            - "--model"
+            - "/model"
+            - "--served-model-name"
+            - "nemotron-nano-9b-v2"
+            - "--trust-remote-code"
+            - "--mamba_ssm_cache_dtype"
+            - "float32"
+            - "--tensor-parallel-size"
+            - "1"
+            - "--max-model-len"
+            - "16384"
+            - "--port"
+            - "8000"
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: model
+              mountPath: /model
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 40
+      volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: model-weights      # (A) mount
+        # (B) HF-download alternative: replace the volume above with `emptyDir: {}` and add an
+        # initContainer that runs `huggingface-cli download $HF_MODEL --local-dir /model`
+        # (needs egress + an HF token Secret). See deploy/README.md.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+spec:
+  selector:
+    app: vllm
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: corrector
+  labels:
+    app: corrector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: corrector
+  template:
+    metadata:
+      labels:
+        app: corrector
+    spec:
+      containers:
+        - name: corrector
+          image: corrector:latest        # build from deploy/Dockerfile, push to your registry
+          envFrom:
+            - configMapRef:
+                name: corrector-config
+          ports:
+            - containerPort: 5244
+          volumeMounts:
+            - name: policy
+              mountPath: /data/policy_store
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5244
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: policy
+          emptyDir: {}                    # or a PVC to persist the Chroma index
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: corrector
+spec:
+  selector:
+    app: corrector
+  ports:
+    - port: 5244
+      targetPort: 5244

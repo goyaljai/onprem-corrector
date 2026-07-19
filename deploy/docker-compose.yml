@@ -1,0 +1,63 @@
+# On-prem corrector — one-host deploy (vLLM + corrector API). Weights are MOUNTED by
+# default (never baked into an image). Clone → set MODEL_PATH → up:
+#
+#   MODEL_PATH=/abs/path/to/nemotron-nano-9b-v2 docker compose up
+#
+# No local weights (fresh cloud box)? Use the HF-download override instead:
+#   docker compose -f docker-compose.yml -f docker-compose.hf.yml up   (see README)
+#
+# Needs the NVIDIA Container Toolkit on the host (GPU passthrough).
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    command: >
+      --model /model
+      --served-model-name ${MODEL_NAME:-nemotron-nano-9b-v2}
+      --trust-remote-code
+      --mamba_ssm_cache_dtype float32
+      --tensor-parallel-size ${TP:-1}
+      --max-model-len 16384
+      --port 8000
+    volumes:
+      - ${MODEL_PATH:?set MODEL_PATH to the model weights directory}:/model:ro
+    ports:
+      - "8000:8000"
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPUS:-1}
+              capabilities: [gpu]
+    healthcheck:
+      # Use python3 (always present in the vLLM image) — NOT curl, which it may not ship.
+      # Verifies identity: the endpoint serves OUR model, not just that a port is open.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if '${MODEL_NAME:-nemotron-nano-9b-v2}' in urllib.request.urlopen('http://localhost:8000/v1/models').read().decode() else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 300s
+
+  corrector:
+    build:
+      context: ..                 # services/corrector/ (so the Dockerfile can COPY app/)
+      dockerfile: deploy/Dockerfile
+    environment:
+      VLLM_BASE_URL: http://vllm:8000/v1   # talks to the vLLM service by name
+      MODEL_NAME: ${MODEL_NAME:-nemotron-nano-9b-v2}
+      POLICY_DIR: /data/policy_store
+      API_PORT: 5244
+    volumes:
+      - corrector_policy:/data/policy_store   # Chroma index survives restarts
+    ports:
+      - "5244:5244"
+    depends_on:
+      vllm:
+        condition: service_healthy
+
+volumes:
+  corrector_policy:
