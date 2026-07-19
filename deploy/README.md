@@ -76,6 +76,37 @@ curl -s -X POST localhost:5244/v1/corrector/analyze -H 'Content-Type: applicatio
   -d '{"agent_utterance":"the late fee is 500 rupees","context":"..."}'
 ```
 
+## Appendix — GCP GPU VM host setup from scratch (verified on 2× L4, Debian 13)
+
+A bare GCP GPU VM has the GPU but **no driver, no Docker, no toolkit**. Do this once, then run
+Option A/B above. (Verified on a `g2` VM with 2× NVIDIA L4, Debian 13 / trixie.)
+
+```bash
+# 0) confirm the GPU is attached (works even with no driver)
+lspci | grep -i nvidia                       # -> NVIDIA ... [L4]  (×2)
+
+# 1) NVIDIA driver — Debian 13 keeps apt components in deb822 format
+sudo sed -i '/^Components:/ s/$/ contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
+sudo apt-get update
+sudo apt-get install -y linux-headers-cloud-amd64 build-essential dkms nvidia-driver nvidia-smi gnupg
+sudo modprobe nvidia && nvidia-smi           # -> 2× NVIDIA L4, driver 550.x
+
+# 2) Docker + NVIDIA Container Toolkit (so a container can see the GPU)
+sudo apt-get install -y docker.io && sudo systemctl enable --now docker
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+sudo docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi -L   # must list both GPUs
+```
+
+**Gotchas:** Debian 13 uses `/etc/apt/sources.list.d/debian.sources` (deb822) — edit that to add
+`contrib non-free`; a minimal image lacks `gpg` (install `gnupg`); a container's CUDA must be **≤**
+the host driver's CUDA (driver 550 → CUDA 12.4).
+
 ## Notes
 - **No secrets in the repo or the image.** The vLLM `api_key` is a literal `"dummy"` (it points at your box). An optional `HF_TOKEN` is passed via env, never committed.
 - **Weights are yours to supply.** This repo documents *how*; it never ships or downloads them for you.
