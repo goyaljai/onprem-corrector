@@ -1,25 +1,42 @@
-# On-prem corrector — one-host deploy (vLLM + corrector API). Weights are MOUNTED by
-# default (never baked into an image). Clone → set MODEL_PATH → up:
+# On-prem corrector — one-host deploy (vLLM + corrector API).
 #
-#   MODEL_PATH=/abs/path/to/nemotron-nano-9b-v2 docker compose up
+# ZERO-PREP DEFAULT: clone → up. vLLM PULLS the model from Hugging Face on first start
+# (Nemotron-Nano-9B is ungated — no token needed) and caches it in the `hfcache` volume,
+# so restarts don't re-download. tensor-parallel-size AUTO-DETECTS your GPU count.
 #
-# No local weights (fresh cloud box)? Use the HF-download override instead:
-#   docker compose -f docker-compose.yml -f docker-compose.hf.yml up   (see README)
+#   docker compose -f deploy/docker-compose.yml up --build
+#   # corrector API → http://localhost:5244   ·   vLLM → http://localhost:8000
 #
+# Air-gapped / offline (weights already on disk, no egress)? Mount them instead:
+#   MODEL_PATH=/abs/path/to/weights \
+#     docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.mount.yml up
+#
+# Knobs (all optional): MODEL_ID (HF repo), MODEL_NAME (served id), MAX_LEN, TP (pin
+# tensor-parallel-size instead of auto), HF_TOKEN (only for gated models).
 # Needs the NVIDIA Container Toolkit on the host (GPU passthrough).
 services:
   vllm:
     image: vllm/vllm-openai:latest
-    command: >
-      --model /model
-      --served-model-name ${MODEL_NAME:-nemotron-nano-9b-v2}
-      --trust-remote-code
-      --mamba_ssm_cache_dtype float32
-      --tensor-parallel-size ${TP:-1}
-      --max-model-len 16384
-      --port 8000
+    # Auto-detect GPU count → tensor-parallel-size. `nvidia-smi -L` is injected by the
+    # NVIDIA runtime; fall back to 1 if it's unavailable. Override by setting TP.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        TP=$${TP:-$$(nvidia-smi -L 2>/dev/null | wc -l)};
+        [ "$$TP" -ge 1 ] 2>/dev/null || TP=1;
+        echo "[vllm] auto tensor-parallel-size=$$TP";
+        exec python3 -m vllm.entrypoints.openai.api_server
+        --model ${MODEL_ID:-nvidia/NVIDIA-Nemotron-Nano-9B-v2}
+        --served-model-name ${MODEL_NAME:-nemotron-nano-9b-v2}
+        --trust-remote-code
+        --mamba_ssm_cache_dtype float32
+        --tensor-parallel-size $$TP
+        --max-model-len ${MAX_LEN:-16384}
+        --host 0.0.0.0 --port 8000
     volumes:
-      - ${MODEL_PATH:?set MODEL_PATH to the model weights directory}:/model:ro
+      - hfcache:/root/.cache/huggingface   # cache pulled weights across restarts
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}   # only needed for GATED models
     ports:
       - "8000:8000"
     ipc: host
@@ -31,7 +48,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: ${GPUS:-1}
+              count: all           # expose every GPU; TP auto-detects from this
               capabilities: [gpu]
     healthcheck:
       # Use python3 (always present in the vLLM image) — NOT curl, which it may not ship.
@@ -39,12 +56,12 @@ services:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if '${MODEL_NAME:-nemotron-nano-9b-v2}' in urllib.request.urlopen('http://localhost:8000/v1/models').read().decode() else 1)"]
       interval: 30s
       timeout: 5s
-      retries: 30
-      start_period: 300s
+      retries: 60
+      start_period: 600s          # first run also downloads ~17GB of weights
 
   corrector:
     build:
-      context: ..                 # services/corrector/ (so the Dockerfile can COPY app/)
+      context: ..                 # repo root (so the Dockerfile can COPY app/ + sample/)
       dockerfile: deploy/Dockerfile
     environment:
       VLLM_BASE_URL: http://vllm:8000/v1   # talks to the vLLM service by name
@@ -60,4 +77,5 @@ services:
         condition: service_healthy
 
 volumes:
-  corrector_policy:
+  hfcache:            # Hugging Face weight cache (populated on first `up`)
+  corrector_policy:   # Chroma policy index

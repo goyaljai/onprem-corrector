@@ -14,29 +14,24 @@ Hugging Face).
 1. **vLLM** (`vllm/vllm-openai`) — serves your model on `:8000`, OpenAI-compatible.
 2. **corrector** (this repo's `deploy/Dockerfile`) — the FastAPI API on `:5244`, calls vLLM by service name.
 
-## Option A — Docker Compose (single host), weights mounted (default)
+## Option A — Docker Compose (single host), zero-prep (DEFAULT)
+Clone → up. vLLM **pulls the model from Hugging Face** on first start (Nemotron-Nano-9B is ungated —
+no token) and caches it; `tensor-parallel-size` **auto-detects your GPU count** (1 GPU → TP=1,
+2 GPUs → TP=2, unchanged). Nothing to stage.
 ```bash
-MODEL_PATH=/abs/path/to/nemotron-nano-9b-v2 \
-  docker compose -f deploy/docker-compose.yml up --build
+docker compose -f deploy/docker-compose.yml up --build
 # corrector → http://localhost:5244 · vLLM → http://localhost:8000
-# 2 GPUs?  add  TP=2 GPUS=2
+# first `up` downloads ~17GB of weights (cached in the `hfcache` volume for next time)
 ```
+Knobs (all optional): `MODEL_ID` (HF repo), `MODEL_NAME` (served id), `MAX_LEN`, `TP` (pin instead of
+auto-detect), `HF_TOKEN` (only for *gated* models).
 
-## Option B — no local weights (fresh cloud box): pull from Hugging Face at runtime
-Point vLLM at a HF repo instead of mounting a path (downloads on first start; needs egress and, for
-gated models, an `HF_TOKEN`):
-```yaml
-# deploy/docker-compose.hf.yml (overlay)
-services:
-  vllm:
-    command: >
-      --model <org/model> --served-model-name ${MODEL_NAME}
-      --trust-remote-code --max-model-len 16384 --port 8000
-    volumes: []
-    environment: { HUGGING_FACE_HUB_TOKEN: "${HF_TOKEN}" }
-```
+## Option B — air-gapped / offline: mount weights you already have (zero egress)
+No network path to Hugging Face? Stage the weights on disk and mount them — the model layer makes
+**no outbound connection at all**:
 ```bash
-HF_TOKEN=hf_xxx docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.hf.yml up
+MODEL_PATH=/abs/path/to/weights \
+  docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.mount.yml up
 ```
 
 ## Per-cloud instance recipes (then run Option A or B)

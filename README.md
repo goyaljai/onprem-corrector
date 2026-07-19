@@ -95,15 +95,19 @@ flowchart LR
 
 ## 60-second quickstart
 
-Needs a host with an NVIDIA GPU + the NVIDIA Container Toolkit, and model weights on disk.
+Needs a host with an NVIDIA GPU + the NVIDIA Container Toolkit. **No weights to stage** — vLLM pulls
+the (ungated) model from Hugging Face on first start and `tensor-parallel-size` auto-detects your GPU
+count. Bare GPU VM? See [`deploy/README.md`](deploy/README.md) for the one-time host setup (driver +
+Docker + toolkit), verified on a fresh GCP 2× L4 box.
 
 ```bash
 git clone https://github.com/goyaljai/onprem-corrector && cd onprem-corrector
-MODEL_PATH=/abs/path/to/your-model docker compose -f deploy/docker-compose.yml up --build
+docker compose -f deploy/docker-compose.yml up --build      # pulls model on first run (~17GB, cached)
 # corrector API → http://localhost:5244   (vLLM → :8000)
 
-curl localhost:5244/healthz                                   # it's already serving a default SOP
+curl localhost:5244/healthz                                  # it's already serving a default SOP
 ```
+Air-gapped? Mount local weights instead — see Option B in [`deploy/README.md`](deploy/README.md).
 
 No GPU handy? You can still run the **GPU-free unit test** (`python scripts/test_judge_confidence.py`)
 and read `docs/API.md`.
