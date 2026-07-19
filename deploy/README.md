@@ -19,10 +19,16 @@ Clone → up. vLLM **pulls the model from Hugging Face** on first start (Nemotro
 no token) and caches it; `tensor-parallel-size` **auto-detects your GPU count** (1 GPU → TP=1,
 2 GPUs → TP=2, unchanged). Nothing to stage.
 ```bash
-docker compose -f deploy/docker-compose.yml up --build
+# 1) build the corrector image with the CLASSIC builder (works on stock docker.io — no buildx needed)
+docker build -f deploy/Dockerfile -t onprem-corrector:latest .
+# 2) bring the stack up; vLLM pulls the model on first start, corrector reuses the image above
+docker compose -f deploy/docker-compose.yml up -d
 # corrector → http://localhost:5244 · vLLM → http://localhost:8000
 # first `up` downloads ~17GB of weights (cached in the `hfcache` volume for next time)
 ```
+> Stock Debian `docker.io` ships neither the compose v2 plugin nor a recent buildx. Install the
+> compose plugin once (see the host-setup appendix), and pre-build with `docker build` as above to
+> sidestep the buildx requirement.
 Knobs (all optional): `MODEL_ID` (HF repo), `MODEL_NAME` (served id), `MAX_LEN`, `TP` (pin instead of
 auto-detect), `HF_TOKEN` (only for *gated* models).
 
@@ -96,6 +102,13 @@ curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-contai
 sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
 sudo docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi -L   # must list both GPUs
+
+# 3) Docker Compose v2 plugin (docker.io does NOT ship it) — install system-wide
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -sSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+sudo docker compose version                  # -> Docker Compose version v2.x
 ```
 
 **Gotchas:** Debian 13 uses `/etc/apt/sources.list.d/debian.sources` (deb822) — edit that to add

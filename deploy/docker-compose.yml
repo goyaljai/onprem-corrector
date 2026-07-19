@@ -60,6 +60,7 @@ services:
       start_period: 600s          # first run also downloads ~17GB of weights
 
   corrector:
+    image: onprem-corrector:latest   # pre-build with `docker build` (classic builder, no buildx needed)
     build:
       context: ..                 # repo root (so the Dockerfile can COPY app/ + sample/)
       dockerfile: deploy/Dockerfile
