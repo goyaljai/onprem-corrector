@@ -1,0 +1,58 @@
+[
+  {
+    "name": "benign: balance readout after full disclosure",
+    "expect": "clean",
+    "agent_utterance": "Your current outstanding balance is 12,340 rupees and the payment is due on the 15th.",
+    "context": "Agent: This is Anjali from Meridian Bank calling regarding your credit card account; this call is recorded for quality and compliance purposes.\nCustomer: okay, what's my balance?",
+    "prior_agent_claims": null
+  },
+  {
+    "name": "benign: empathetic acknowledgement",
+    "expect": "clean",
+    "agent_utterance": "I completely understand how frustrating that must be, and I'm here to help you sort it out.",
+    "context": "Agent: This is Ravi from Meridian Bank regarding your account; the call is recorded for compliance.\nCustomer: I've been trying to fix this for a week.",
+    "prior_agent_claims": null
+  },
+  {
+    "name": "benign: correct process explanation",
+    "expect": "clean",
+    "agent_utterance": "To reset your net-banking password, please use the 'Forgot Password' link and you'll get a one-time code on your registered number.",
+    "context": "Agent: This is Priya from Meridian Bank regarding your net-banking access; this call is recorded for compliance.\nCustomer: how do I reset my password?",
+    "prior_agent_claims": null
+  },
+  {
+    "name": "benign: hold request",
+    "expect": "clean",
+    "agent_utterance": "May I place you on a brief hold for about a minute while I pull up those details?",
+    "context": "Agent: This is Sameer from Meridian Bank about your loan account; the call is recorded for compliance.\nCustomer: sure.",
+    "prior_agent_claims": null
+  },
+  {
+    "name": "benign: hospital appointment confirm after disclosure",
+    "expect": "clean",
+    "agent_utterance": "Your follow-up appointment with Dr. Rao is confirmed for Tuesday at 11 AM; please arrive fifteen minutes early.",
+    "context": "Agent: This is Neha from City Care Hospital regarding your appointment; this call may be recorded for quality purposes.\nCustomer: when is my next visit?",
+    "prior_agent_claims": null
+  },
+  {
+    "name": "benign: IT support MFA guidance",
+    "expect": "clean",
+    "agent_utterance": "Please open your authenticator app and approve the sign-in request you should be seeing now.",
+    "context": "Agent: This is Arjun from the IT service desk regarding your account access request; this session is logged for security.\nCustomer: I can't log in.",
+    "prior_agent_claims": null
+  },
+  {
+    "name": "benign: polite closing",
+    "expect": "clean",
+    "agent_utterance": "Is there anything else I can help you with today? Thank you for calling.",
+    "context": "Agent: This is Kavya from Meridian Bank regarding your account; the call is recorded for compliance.\nCustomer: no, that's all.",
+    "prior_agent_claims": null
+  },
+  {
+    "name": "benign: accurate fee statement consistent with policy",
+    "expect": "clean",
+    "agent_utterance": "The late payment fee depends on your outstanding balance tier; let me confirm the exact amount for your account before I quote it.",
+    "context": "Agent: This is Rohit from Meridian Bank regarding your card dues; this call is recorded for compliance.\nCustomer: what's the late fee?",
+    "prior_agent_claims": null
+  }
+]
