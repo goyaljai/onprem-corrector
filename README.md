@@ -116,6 +116,13 @@ curl localhost:5244/healthz                                  # it's already serv
 ```
 Air-gapped? Mount local weights instead — see Option B in [`deploy/README.md`](deploy/README.md).
 
+Calling it from another machine (not just `localhost`)? Add the TLS overlay — the plaintext
+port is loopback-only by default:
+```bash
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tls.yml up -d
+curl -sk https://<host>:8443/healthz   # self-signed by default, see deploy/README.md for details
+```
+
 No GPU handy? You can still run the **GPU-free unit test** (`python scripts/test_judge_confidence.py`)
 and read `docs/API.md`.
 

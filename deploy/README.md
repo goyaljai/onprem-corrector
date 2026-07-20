@@ -81,10 +81,16 @@ curl -s -X POST localhost:5244/v1/corrector/analyze -H 'Content-Type: applicatio
 
 Turnkey-open by default (zero-config demo), hard by configuration. Four layers:
 
-**1. API auth (role-based keys).** Set keys and the sensitive endpoints require `X-API-Key`:
+**1. API auth (role-based keys).** Set keys and the sensitive endpoints require `X-API-Key`.
+**Put them in `deploy/.env`, not an inline shell prefix** — an inline `VAR=val docker compose
+up` only applies to *that one command*; any later `docker compose up` (even one that only
+targets a different service, like re-recreating Caddy) re-reads the compose file against
+whatever's in your shell right then, and can silently recreate the corrector **without** the
+keys, reverting it to open mode with no error. A `.env` file is picked up automatically by
+every `docker compose` invocation, so the keys can't be dropped by a later command:
 ```bash
-API_KEYS=caller-key ADMIN_API_KEY=admin-key \
-  docker compose -f deploy/docker-compose.yml up -d
+printf "API_KEYS=caller-key\nADMIN_API_KEY=admin-key\n" > deploy/.env
+docker compose -f deploy/docker-compose.yml up -d
 # /v1/corrector/analyze  -> any caller/admin key   (401 without)
 # /v1/policy/upload, /v1/audit* -> admin key only  (403 with a caller key)
 ```
@@ -107,11 +113,35 @@ docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tls.yml up 
 curl -sk https://localhost:8443/healthz     # -k: self-signed cert by default
 ```
 Self-signed out of the box (`deploy/Caddyfile`, `tls internal`) — Caddy mints the cert from
-its **own offline local CA**, no internet call, which keeps the zero-egress story intact.
+its **own offline local CA**, no internet call, which keeps the zero-egress story intact. The
+Caddyfile names the host explicitly (`localhost:8443`) rather than a bare `:8443` — a hostless
+address makes Caddy treat cert issuance as on-demand-per-SNI, which it refuses without extra
+config, and every handshake fails with a TLS `internal_error` alert. If clients reach this box
+by a different hostname or IP, add it as another comma-separated address in `deploy/Caddyfile`.
+
 Have a public domain pointed at this box? Swap in `deploy/Caddyfile.acme.example` for a real,
 publicly-trusted Let's Encrypt cert (that path *does* call out to Let's Encrypt — a deliberate,
 opt-in exception, not the default). Only set `BIND_HOST=0.0.0.0` if you deliberately want the
 plaintext port network-reachable (e.g. you're terminating TLS somewhere else upstream).
+
+**How a client actually calls it, end to end:**
+```
+your app/service  ──HTTPS (X-API-Key)──▶  Caddy :8443 (TLS termination, self-signed or ACME)
+                                              │  reverse_proxy, same docker network
+                                              ▼
+                                        corrector :5244 (plaintext, loopback-only —
+                                        unreachable from the network directly)
+```
+```python
+import requests
+requests.post("https://<host>:8443/v1/corrector/analyze",
+               headers={"X-API-Key": "caller-key"},
+               json={"agent_utterance": "...", "context": "..."},
+               verify=False)   # self-signed: verify=False, OR pin/import Caddy's local root CA
+                                # (copy it out: docker cp deploy-caddy-1:/data/caddy/pki/authorities/local/root.crt .)
+```
+For a real (publicly-trusted) cert instead of `verify=False`, use the ACME/Let's Encrypt path
+above — then standard TLS verification just works, no special client config needed.
 
 **4. Supply chain.** Generate a CycloneDX SBOM and scan it; sign the image:
 ```bash
