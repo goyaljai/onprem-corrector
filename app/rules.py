@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import List
 
+from .matching import prohibited_hit
 from .schema import Correction
 
 # Fallback anchor for identity-style disclosures when the policy gives no keywords.
@@ -49,12 +50,10 @@ def disclosure_anchors(disc: dict) -> List[str]:
 
 def instant_lane(agent_utterance: str, context: str, policy_meta: dict) -> List[Correction]:
     out: List[Correction] = []
-    utter_lc = agent_utterance.lower()
     ctx_lc = (context + "\n" + agent_utterance).lower()
 
     for i, phrase in enumerate(policy_meta.get("prohibited", [])):
-        p = phrase.lower().strip()
-        if p and p in utter_lc:
+        if prohibited_hit(phrase, agent_utterance):   # word-boundary match (not raw substring)
             out.append(Correction(
                 id=f"a_prohibited_{i}",
                 source="A", strategy="apologize_correct",

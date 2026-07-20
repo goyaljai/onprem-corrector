@@ -75,8 +75,19 @@ def test_input_block_hashed():
     check("chain still verifies", a.AuditLog(os.environ["AUDIT_DIR"]).verify()["ok"] is True)
 
 
+def test_prohibited_wordboundary():
+    print("4. Finding 3 — prohibited match is word-boundary, not raw substring")
+    from app.matching import prohibited_hit
+    check("'pin' does NOT fire on 'typing'", prohibited_hit("pin", "I'm typing that in now") is False)
+    check("'otp' does NOT fire on unrelated word", prohibited_hit("otp", "we will adopt a new plan") is False)
+    check("'pin' DOES fire on 'your pin'", prohibited_hit("pin", "please tell me your pin") is True)
+    check("suffix variant kept: 'arrest' -> 'arrested'", prohibited_hit("arrest", "you will be arrested") is True)
+    check("multi-word phrase matches", prohibited_hit("we never issue refunds", "sorry, we never issue refunds here") is True)
+    check("empty phrase never fires", prohibited_hit("", "anything") is False)
+
+
 if __name__ == "__main__":
-    for t in (test_grounding, test_redaction, test_input_block_hashed):
+    for t in (test_grounding, test_redaction, test_input_block_hashed, test_prohibited_wordboundary):
         t()
     ok = all(results)
     print(f"\n{'ALL PASSED' if ok else 'SOME FAILED'} — {sum(results)}/{len(results)} checks")

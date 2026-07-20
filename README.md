@@ -9,7 +9,7 @@ conversation and catches — or fixes — the moment an agent breaks **your** po
 **your** hardware, on **your** model, grounded in **your** SOP. The customer transcript and your
 policy documents **never leave your premises.**
 
-![data](https://img.shields.io/badge/data-sovereign-blueviolet) ![egress](https://img.shields.io/badge/egress-none-brightgreen) ![status](https://img.shields.io/badge/status-production--ready%20v1.0-success) ![audit](https://img.shields.io/badge/audit-tamper--evident-informational) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-3.10+-blue) ![deploy](https://img.shields.io/badge/deploy-Docker%20%C2%B7%20K8s%20%C2%B7%20GCP%2FAWS%2FAzure-orange)
+![data](https://img.shields.io/badge/data-sovereign-blueviolet) ![egress](https://img.shields.io/badge/egress-none-brightgreen) ![status](https://img.shields.io/badge/status-production--ready%20v1.0.1-success) ![audit](https://img.shields.io/badge/audit-tamper--evident-informational) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-3.10+-blue) ![deploy](https://img.shields.io/badge/deploy-Docker%20%C2%B7%20K8s%20%C2%B7%20GCP%2FAWS%2FAzure-orange)
 
 > **v1.0 — production-ready.** Tamper-evident audit trail · role-based auth + enforced zero-egress · multi-document policy corpus · measured accuracy (100% recall on the labeled packs) · two adversarial audits with all findings fixed. Verified end-to-end on a GCP 2× L4 box.
 
