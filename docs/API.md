@@ -7,6 +7,12 @@ well-formed empty body (or a 4xx/5xx) — it never crashes the caller.
 the machine-readable spec at [`/openapi.json`](/openapi.json) (endpoints grouped by tag: `compliance`,
 `policy`, `audit`, `ops`). Disable with `DOCS_ENABLED=false` for locked-down deployments.
 
+**Auth (issue #2).** If `API_KEYS` / `ADMIN_API_KEY` are configured, send `X-API-Key: <key>`.
+Roles: **caller** → `POST /v1/corrector/analyze`, `GET /v1/policy/anchors`; **admin** (⊇ caller) →
+`POST /v1/policy/upload`, `GET /v1/audit*`. Responses: `401` missing/invalid key, `403` valid key but
+wrong role, `429` rate-limited, `503` if `AUTH_REQUIRED=true` but no keys set. `GET /healthz` is always
+open (liveness). No keys configured ⇒ **open mode** (loud startup warning).
+
 ## `GET /healthz`
 ```json
 { "status": "ok", "vllm": true, "model": "nemotron-nano-9b-v2",

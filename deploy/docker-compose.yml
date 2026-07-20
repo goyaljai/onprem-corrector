@@ -72,7 +72,12 @@ services:
       AUDIT_DIR: /data/audit_store              # tamper-evident audit log persists here
       AUDIT_STORE_MODE: ${AUDIT_STORE_MODE:-redacted}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-0}
-      AUDIT_API_KEY: ${AUDIT_API_KEY:-}         # set to enable the /v1/audit* read endpoints
+      # --- security (issue #2): set keys to lock the API down ---
+      API_KEYS: ${API_KEYS:-}                   # caller keys (POST /analyze)
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}         # admin keys (upload policy, read /v1/audit*)
+      AUDIT_API_KEY: ${AUDIT_API_KEY:-}         # legacy: also treated as an admin key
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-false}
+      RATE_LIMIT_PER_MIN: ${RATE_LIMIT_PER_MIN:-0}
     volumes:
       - corrector_policy:/data/policy_store   # Chroma index survives restarts
       - corrector_audit:/data/audit_store     # audit chain survives restarts (compliance evidence)

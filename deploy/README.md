@@ -77,6 +77,41 @@ curl -s -X POST localhost:5244/v1/corrector/analyze -H 'Content-Type: applicatio
   -d '{"agent_utterance":"the late fee is 500 rupees","context":"..."}'
 ```
 
+## Security (issue #2) — lock it down for production
+
+Turnkey-open by default (zero-config demo), hard by configuration. Four layers:
+
+**1. API auth (role-based keys).** Set keys and the sensitive endpoints require `X-API-Key`:
+```bash
+API_KEYS=caller-key ADMIN_API_KEY=admin-key \
+  docker compose -f deploy/docker-compose.yml up -d
+# /v1/corrector/analyze  -> any caller/admin key   (401 without)
+# /v1/policy/upload, /v1/audit* -> admin key only  (403 with a caller key)
+```
+`AUTH_REQUIRED=true` refuses all traffic unless a key is configured+sent. `RATE_LIMIT_PER_MIN=N`
+caps per-identity request rate. With no keys set the API is **open** and logs a loud startup warning.
+
+**2. Enforced zero-egress.** Make "no data leaves" a control, not a promise:
+- **k8s:** `kubectl apply -f deploy/k8s/networkpolicy.yaml` (default-deny egress; allow only DNS + vLLM).
+- **docker:** add the internal-network overlay — the corrector gets no route to the internet:
+  ```bash
+  docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.locked.yml up -d
+  docker compose exec corrector python scripts/egress_check.py   # -> LOCKED DOWN
+  ```
+
+**3. TLS.** The app speaks plain HTTP; terminate TLS at a reverse proxy on the same host
+(Caddy auto-HTTPS, or nginx/traefik with your cert), e.g. Caddy one-liner:
+```
+corrector.internal { reverse_proxy localhost:5244 }
+```
+Or run uvicorn with `--ssl-keyfile/--ssl-certfile`. Keep the plaintext port bound to loopback.
+
+**4. Supply chain.** Generate a CycloneDX SBOM and scan it; sign the image:
+```bash
+docker compose exec corrector python scripts/gen_sbom.py > sbom.json   # then: grype sbom:sbom.json
+cosign sign <registry>/onprem-corrector:latest                          # provenance for the image
+```
+
 ## Appendix — GCP GPU VM host setup from scratch (verified on 2× L4, Debian 13)
 
 A bare GCP GPU VM has the GPU but **no driver, no Docker, no toolkit**. Do this once, then run

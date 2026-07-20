@@ -1,0 +1,22 @@
+# Enforced zero-egress for Docker Compose (issue #2).
+#
+# Puts the corrector on an `internal: true` network — Docker gives it NO route to the outside
+# world, so even a compromised dependency cannot phone home. It still reaches vLLM (which
+# bridges both networks) and still serves :5244 to the host. Usage:
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.locked.yml up -d
+#
+# Prove it (should print BLOCKED):
+#   docker compose exec corrector python scripts/egress_check.py
+#
+# vLLM keeps outward access on first run to PULL the model from Hugging Face; for a fully
+# air-gapped box use the mount overlay (docker-compose.mount.yml) so nothing needs egress.
+services:
+  corrector:
+    networks: [locked]          # ONLY the internal network -> no external egress
+  vllm:
+    networks: [default, locked] # bridges: talks to corrector on `locked`, pulls weights on `default`
+
+networks:
+  locked:
+    internal: true              # the enforcement: no gateway to the outside

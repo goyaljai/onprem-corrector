@@ -24,14 +24,12 @@ from . import rag_index
 from .rules import instant_lane, disclosure_anchors
 from .judge import judge
 from .audit import get_audit
+from .auth import require, startup_notice, auth_configured
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "nemotron-nano-9b-v2")
 POLICY_DIR = os.environ.get("POLICY_DIR", "./policy_store")
 GUARDRAILS_DIR = os.path.join(os.path.dirname(__file__), "guardrails")
-# Read-side guard for the SENSITIVE audit endpoints (they can expose transcripts). If unset,
-# the audit READ API is disabled entirely — a safe default until full auth (issue #2) lands.
-AUDIT_API_KEY = os.environ.get("AUDIT_API_KEY", "")
 DOCS_ENABLED = os.environ.get("DOCS_ENABLED", "true").lower() != "false"
 
 # --- OpenAPI / Swagger surface (issue #4): self-describing API, grouped by tag ---------
@@ -58,14 +56,6 @@ app = FastAPI(
     redoc_url="/redoc" if DOCS_ENABLED else None,
 )
 client = OpenAI(base_url=VLLM_BASE_URL, api_key="dummy")
-
-
-def _require_audit_key(x_api_key: str | None = Header(default=None)):
-    """Guard the audit read endpoints. Disabled (403) unless AUDIT_API_KEY is configured."""
-    if not AUDIT_API_KEY:
-        raise HTTPException(status_code=403, detail="Audit API disabled: set AUDIT_API_KEY to enable.")
-    if x_api_key != AUDIT_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key.")
 
 
 def _corr_dicts(corrections) -> list:
@@ -132,8 +122,9 @@ def _startup():
                     rag_index.index_handbook(f.read(), f"v-default-{int(time.time())}")
     except Exception:
         pass  # never block startup on the default-load
-    get_audit()   # initialise the audit chain (loads/creates _chain.json)
-    _get_rails()  # warm it
+    get_audit()      # initialise the audit chain (loads/creates _chain.json)
+    startup_notice() # loud warning if the API is unauthenticated
+    _get_rails()     # warm it
 
 
 @app.get("/healthz", tags=["ops"], summary="Liveness + vLLM reachability + policy version")
@@ -149,8 +140,8 @@ def healthz():
 
 
 @app.post("/v1/policy/upload", response_model=UploadResponse, tags=["policy"],
-          summary="Index a policy/SOP markdown (replaces the current policy)")
-async def upload_policy(request: Request):
+          summary="Index a policy/SOP markdown (replaces the current policy) — admin only")
+async def upload_policy(request: Request, _auth=Depends(require("admin"))):
     # Accept the raw policy markdown as the request body (text/plain OR application/json string).
     raw = (await request.body()).decode("utf-8")
     if raw[:1] == '"' and raw[-1:] == '"':  # tolerate a JSON-quoted string too
@@ -173,7 +164,7 @@ async def upload_policy(request: Request):
 
 @app.get("/v1/policy/anchors", tags=["policy"],
          summary="SOP-derived disclosure anchors + prohibited phrases (read-only, no LLM)")
-def policy_anchors():
+def policy_anchors(_auth=Depends(require("caller"))):
     """Expose the SOP-derived disclosure ANCHORS (#35) so an external compliance check —
     e.g. the voice-copilot C1 identity matcher — can consume policy-grounded signals instead
     of a hardcoded phrase list. Read-only; no LLM. The anchors are exactly what the instant
@@ -191,7 +182,7 @@ def policy_anchors():
 
 @app.post("/v1/corrector/analyze", response_model=AnalyzeResponse, tags=["compliance"],
           summary="Judge one agent utterance → corrections[] (A/B/C, verdict-only)")
-def analyze(req: AnalyzeRequest):
+def analyze(req: AnalyzeRequest, _auth=Depends(require("caller"))):
     t0 = time.time()
     meta = rag_index.load_policy_meta()
 
@@ -242,18 +233,18 @@ def analyze(req: AnalyzeRequest):
 
 
 # ------------------------------------------------------------------- audit trail (#1)
-@app.get("/v1/audit", tags=["audit"], summary="Query recent audit records (key-gated)")
+@app.get("/v1/audit", tags=["audit"], summary="Query recent audit records — admin only")
 def audit_query(limit: int = Query(50, ge=1, le=1000), event: str | None = None,
-                since_seq: int = 0, _auth=Depends(_require_audit_key)):
+                since_seq: int = 0, _auth=Depends(require("admin"))):
     return {"records": get_audit().query(limit=limit, event=event, since_seq=since_seq)}
 
 
 @app.get("/v1/audit/verify", tags=["audit"],
-         summary="Recompute the hash chain → integrity proof (ok / broken_at)")
-def audit_verify(_auth=Depends(_require_audit_key)):
+         summary="Recompute the hash chain → integrity proof (ok / broken_at) — admin only")
+def audit_verify(_auth=Depends(require("admin"))):
     return get_audit().verify()
 
 
-@app.get("/v1/audit/stats", tags=["audit"], summary="Aggregate counts by event / gate / source")
-def audit_stats(_auth=Depends(_require_audit_key)):
+@app.get("/v1/audit/stats", tags=["audit"], summary="Aggregate counts by event / gate / source — admin only")
+def audit_stats(_auth=Depends(require("admin"))):
     return get_audit().stats()

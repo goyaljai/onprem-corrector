@@ -91,6 +91,7 @@ flowchart LR
 - 🧯 **Safe by construction** — verdict-only, confidence-gated, quote-required for auto-actions; graceful degradation (bounded inputs, per-finding isolation) so one bad response never sinks the batch.
 - 🧾 **Tamper-evident audit trail** — every verdict/policy-change is hash-chained (append-only), PII-redacted, retention-configurable, and verifiable **offline** (`GET /v1/audit/verify` pin-points any tampering). Compliance evidence, not a promise.
 - 📖 **Self-describing API** — interactive Swagger UI at `/docs`, ReDoc at `/redoc`, spec at `/openapi.json`.
+- 🔑 **Locked down for prod** — role-based API keys (caller vs admin), rate limiting, **enforced** zero-egress (k8s NetworkPolicy / docker internal-network + an `egress_check` proof), TLS guidance, and a CycloneDX SBOM. Open by default for the demo, hard by one env var.
 - 📦 **Runs out-of-the-box** — ships a default sample SOP and auto-loads it, so `/analyze` works before you upload anything.
 - ☁️ **Deploy anywhere** — Docker Compose · Kubernetes · GCP / AWS / Azure recipes; weights mounted or pulled at runtime, never baked into an image; no secrets in the repo.
 - ✅ **Proven** — bundled adversarial packs (bank · hospital · IT) with planted mistakes; a GPU-free unit test; verified end-to-end on H100.
