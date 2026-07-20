@@ -1,0 +1,27 @@
+# TLS termination overlay (issue: the API was plaintext HTTP) — puts a Caddy reverse proxy
+# in front of the corrector with automatic TLS. Self-signed out of the box (Caddy's offline
+# local CA — no internet call); see Caddyfile.acme.example for a real public-domain cert.
+#
+# The corrector's plaintext port is already loopback-only by default (docker-compose.yml),
+# so once this overlay is up, Caddy on :8443 is the intended network-facing entrypoint.
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tls.yml up -d
+#   curl -sk https://localhost:8443/healthz                     # -k: self-signed cert (default)
+#   curl -sk https://localhost:8443/v1/corrector/analyze -H 'X-API-Key: ...' -d '{...}'
+#
+# Combining with docker-compose.locked.yml (enforced zero-egress)? Add `caddy` to the
+# `locked` network there too, since `tls internal` needs no egress but service-to-service
+# routing does need a shared network.
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - corrector
+
+volumes:
+  caddy_data:   # Caddy's local CA root + issued certs — keep this to avoid cert churn on restart

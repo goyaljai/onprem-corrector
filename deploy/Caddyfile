@@ -1,0 +1,10 @@
+# Self-signed TLS by default — zero config, works on ANY box including a private IP with
+# no public domain. Caddy's `tls internal` uses its own OFFLINE local CA (no internet call,
+# no ACME) to mint the cert, which fits the zero-egress story: TLS with no network dependency.
+#
+# Have a public domain pointed at this box and want a real trusted cert (Let's Encrypt)
+# instead? See Caddyfile.acme.example — replace this file's contents with that pattern.
+:8443 {
+	tls internal
+	reverse_proxy corrector:5244
+}

@@ -1,0 +1,13 @@
+# Example: automatic, publicly-trusted TLS (Let's Encrypt) when you have a real domain
+# pointed at this box — replace deploy/Caddyfile's contents with this pattern.
+#
+# Requirements: corrector.example.com's DNS A record points at this host, and the host is
+# reachable on 80/443 from the internet (for the ACME HTTP-01 challenge). Then also change
+# docker-compose.tls.yml's Caddy port mapping from "8443:8443" to "443:443" + "80:80".
+#
+# NOTE: this path makes an outbound call to Let's Encrypt to issue the cert — a deliberate,
+# one-time exception to zero-egress, made only if you choose a public domain. The default
+# Caddyfile (tls internal) makes NO network call at all.
+corrector.example.com {
+	reverse_proxy corrector:5244
+}

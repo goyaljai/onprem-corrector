@@ -9,7 +9,7 @@ conversation and catches — or fixes — the moment an agent breaks **your** po
 **your** hardware, on **your** model, grounded in **your** SOP. The customer transcript and your
 policy documents **never leave your premises.**
 
-![data](https://img.shields.io/badge/data-sovereign-blueviolet) ![egress](https://img.shields.io/badge/egress-none-brightgreen) ![status](https://img.shields.io/badge/status-production--ready%20v1.0.1-success) ![audit](https://img.shields.io/badge/audit-tamper--evident-informational) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-3.10+-blue) ![deploy](https://img.shields.io/badge/deploy-Docker%20%C2%B7%20K8s%20%C2%B7%20GCP%2FAWS%2FAzure-orange)
+![data](https://img.shields.io/badge/data-sovereign-blueviolet) ![egress](https://img.shields.io/badge/egress-none-brightgreen) ![status](https://img.shields.io/badge/status-production--ready%20v1.1.0-success) ![audit](https://img.shields.io/badge/audit-tamper--evident-informational) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-3.10+-blue) ![deploy](https://img.shields.io/badge/deploy-Docker%20%C2%B7%20K8s%20%C2%B7%20GCP%2FAWS%2FAzure-orange)
 
 > **v1.0 — production-ready.** Tamper-evident audit trail · role-based auth + enforced zero-egress · multi-document policy corpus · measured accuracy (100% recall on the labeled packs) · two adversarial audits with all findings fixed. Verified end-to-end on a GCP 2× L4 box.
 
@@ -93,7 +93,7 @@ flowchart LR
 - 🧯 **Safe by construction** — verdict-only, confidence-gated, quote-required for auto-actions; graceful degradation (bounded inputs, per-finding isolation) so one bad response never sinks the batch.
 - 🧾 **Tamper-evident audit trail** — every verdict/policy-change is hash-chained (append-only), PII-redacted, retention-configurable, and verifiable **offline** (`GET /v1/audit/verify` pin-points any tampering). Compliance evidence, not a promise.
 - 📖 **Self-describing API** — interactive Swagger UI at `/docs`, ReDoc at `/redoc`, spec at `/openapi.json`.
-- 🔑 **Locked down for prod** — role-based API keys (caller vs admin), rate limiting, **enforced** zero-egress (k8s NetworkPolicy / docker internal-network + an `egress_check` proof), TLS guidance, and a CycloneDX SBOM. Open by default for the demo, hard by one env var.
+- 🔑 **Locked down for prod** — role-based API keys (caller vs admin), rate limiting, **enforced** zero-egress (k8s NetworkPolicy / docker internal-network + an `egress_check` proof), a **TLS overlay** (loopback-bound by default; Caddy termination with a self-signed cert minted by its own offline CA — zero extra egress), and a CycloneDX SBOM. Open by default for the demo, hard by one command.
 - 📚 **Multi-document policy corpus** — real enterprises have many policies, not one file: add/update/delete named docs independently, or bulk-load a **ZIP of markdown**; verdicts **cite which document**.
 - 📈 **Measured, not vibes** — an eval harness scores recall / false-positive-rate / latency on labeled packs and **calibrates the gate** from data (100% recall, gate 0.80 validated on the sample packs).
 - 📦 **Runs out-of-the-box** — ships a default sample SOP and auto-loads it, so `/analyze` works before you upload anything.

@@ -82,7 +82,11 @@ services:
       - corrector_policy:/data/policy_store   # Chroma index survives restarts
       - corrector_audit:/data/audit_store     # audit chain survives restarts (compliance evidence)
     ports:
-      - "5244:5244"
+      # LOOPBACK-ONLY by default: the API is plaintext HTTP, so it must not be exposed to the
+      # network unencrypted. Same-host access (curl localhost:5244, SSH session) still works.
+      # For network access, use the TLS overlay (docker-compose.tls.yml) instead of widening
+      # this bind — set BIND_HOST=0.0.0.0 only if you understand you're serving plaintext.
+      - "${BIND_HOST:-127.0.0.1}:5244:5244"
     depends_on:
       vllm:
         condition: service_healthy

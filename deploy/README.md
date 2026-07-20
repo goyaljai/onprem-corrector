@@ -99,12 +99,19 @@ caps per-identity request rate. With no keys set the API is **open** and logs a 
   docker compose exec corrector python scripts/egress_check.py   # -> LOCKED DOWN
   ```
 
-**3. TLS.** The app speaks plain HTTP; terminate TLS at a reverse proxy on the same host
-(Caddy auto-HTTPS, or nginx/traefik with your cert), e.g. Caddy one-liner:
+**3. TLS.** The app itself speaks plain HTTP, so **by default its port is bound to
+`127.0.0.1` only** (same-host access works; the network cannot reach it in plaintext). For
+network access, terminate TLS with the bundled Caddy overlay instead of widening that bind:
+```bash
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tls.yml up -d
+curl -sk https://localhost:8443/healthz     # -k: self-signed cert by default
 ```
-corrector.internal { reverse_proxy localhost:5244 }
-```
-Or run uvicorn with `--ssl-keyfile/--ssl-certfile`. Keep the plaintext port bound to loopback.
+Self-signed out of the box (`deploy/Caddyfile`, `tls internal`) — Caddy mints the cert from
+its **own offline local CA**, no internet call, which keeps the zero-egress story intact.
+Have a public domain pointed at this box? Swap in `deploy/Caddyfile.acme.example` for a real,
+publicly-trusted Let's Encrypt cert (that path *does* call out to Let's Encrypt — a deliberate,
+opt-in exception, not the default). Only set `BIND_HOST=0.0.0.0` if you deliberately want the
+plaintext port network-reachable (e.g. you're terminating TLS somewhere else upstream).
 
 **4. Supply chain.** Generate a CycloneDX SBOM and scan it; sign the image:
 ```bash
