@@ -2,6 +2,16 @@
 # no public domain. Caddy's `tls internal` uses its own OFFLINE local CA (no internet call,
 # no ACME) to mint the cert, which fits the zero-egress story: TLS with no network dependency.
 #
+# HTTP/3 (QUIC-over-UDP) is disabled: containers commonly can't raise the UDP receive buffer
+# Caddy wants (see the "failed to sufficiently increase receive buffer size" warning), which
+# left h3 half-broken and caused h1/h2 clients (curl, most SDKs) to get a TLS "internal_error"
+# alert during ALPN negotiation. A JSON API has no need for QUIC — h1+h2 is simpler and works.
+{
+	servers {
+		protocols h1 h2
+	}
+}
+
 # Have a public domain pointed at this box and want a real trusted cert (Let's Encrypt)
 # instead? See Caddyfile.acme.example — replace this file's contents with that pattern.
 :8443 {
