@@ -28,7 +28,12 @@ def req(method, path, data=None, admin=False, raw=False, ctype="application/json
     k = ADMIN_KEY if admin else KEY
     if k:
         hdrs["X-API-Key"] = k
-    body = data if (raw or data is None) else json.dumps(data).encode()
+    if data is None:
+        body = None
+    elif raw:
+        body = data if isinstance(data, bytes) else data.encode()
+    else:
+        body = json.dumps(data).encode()
     r = urllib.request.Request(BASE + path, data=body, method=method, headers=hdrs)
     with urllib.request.urlopen(r, timeout=120) as resp:
         return json.load(resp)
