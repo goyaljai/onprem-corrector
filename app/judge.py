@@ -19,6 +19,7 @@ from typing import List
 from openai import OpenAI
 
 from .gate import compute_gate
+from .grounding import grounded as _grounded
 from .schema import Correction
 
 _KIND_SOURCE = {"policy_violation": "A", "self_contradiction": "B", "tone": "C"}
@@ -114,13 +115,22 @@ def judge(client: OpenAI, model: str, utterance: str, context: str,
         qs, qc = f.get("quote_said"), f.get("quote_correct")
         if source == "B" and not (qs and qc):
             continue  # honesty rule: self-contradiction needs both quotes
+        # GROUNDING GATE (security fix): a source-B correction may only auto-fire if BOTH
+        # quotes are verifiably present in the real transcript. If the model fabricated or
+        # paraphrased them, `both_quotes` is False -> compute_gate downgrades B to "propose"
+        # (human review) instead of auto-applying an apology for words never said.
+        both_quotes = bool(qs and qc)
+        if source == "B":
+            grounded = (_grounded(qs, f"{utterance}\n{context}")
+                        and _grounded(qc, f"{prior_claims}\n{context}"))
+            both_quotes = both_quotes and grounded
         try:
             out.append(Correction(
                 id=f"{source.lower()}_{kind}_{uuid.uuid4().hex[:6]}",
                 source=source, strategy=strategy, confidence=conf, severity=sev,
                 reason=f.get("reason", ""), quote_said=qs, quote_correct=qc,
                 cited_policy=f.get("cited_policy"), suggested_line=f.get("suggested_line"),
-                gate=compute_gate(source, conf, both_quotes=bool(qs and qc), deterministic=False),
+                gate=compute_gate(source, conf, both_quotes=both_quotes, deterministic=False),
             ))
         except Exception:
             # Defense in depth: a single malformed finding must not sink the whole lane —

@@ -186,13 +186,17 @@ def analyze(req: AnalyzeRequest, _auth=Depends(require("caller"))):
     t0 = time.time()
     meta = rag_index.load_policy_meta()
 
-    # 1. input guardrail (deterministic fast path)
-    if _has_secrets(req.agent_utterance):
+    # 1. input guardrail (deterministic fast path). Screen the utterance AND the context/
+    # prior — both flow into the judge prompt, so an injection/secret there must be caught too.
+    if _has_secrets(req.agent_utterance) or _has_secrets(req.context) or _has_secrets(req.prior_agent_claims or ""):
         latency = int((time.time()-t0)*1000)
+        # store_mode="hashed": we KNOW this input carries a secret — never persist it in clear,
+        # even under AUDIT_STORE_MODE=redacted/full (the redactor is not a perfect net).
         get_audit().record("input_block", policy_version=meta.get("version"), model=MODEL_NAME,
                            lanes=["input_guard"], latency_ms=latency,
                            utterance=req.agent_utterance, context=req.context,
-                           prior=req.prior_agent_claims or "", extra={"blocked": True})
+                           prior=req.prior_agent_claims or "", extra={"blocked": True},
+                           store_mode="hashed")
         return AnalyzeResponse(
             observations=[Observation(id=f"blk_{uuid.uuid4().hex[:6]}", category="input_guardrail",
                                       severity=3, observation="Input blocked by guardrail (possible secret/injection).",

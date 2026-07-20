@@ -63,7 +63,8 @@ def main(paths):
             c["_expect"] = _norm(c.get("expect"))
             cases.append(c)
 
-    per_src = {s: {"total": 0, "hit": 0} for s in ("A", "B", "C")}
+    LABELS = ("A", "B", "C", "BLOCKED")
+    per_src = {s: {"total": 0, "hit": 0} for s in LABELS}
     clean_total = clean_fp = 0
     latencies = []
     calib = []          # (confidence, is_correct) for the gate sweep
@@ -78,17 +79,22 @@ def main(paths):
         latencies.append(ms)
         corr = out.get("corrections", [])
         preds = {x.get("source") for x in corr}
+        blocked = bool(out.get("meta", {}).get("blocked"))
         exp = c["_expect"]
 
         if exp == "clean":
             clean_total += 1
-            if corr:
+            if corr or blocked:                  # a benign line should neither be flagged nor blocked
                 clean_fp += 1
-            for x in corr:                       # every finding on a benign line is a false positive
+            for x in corr:
                 calib.append((float(x.get("confidence") or 0), False))
-            rows.append((c["name"][:48], exp, ",".join(sorted(p for p in preds if p)) or "-",
-                         "FP" if corr else "ok"))
-        else:
+            rows.append((c["name"][:48], exp, ",".join(sorted(p for p in preds if p)) or ("BLK" if blocked else "-"),
+                         "FP" if (corr or blocked) else "ok"))
+        elif exp == "BLOCKED":                    # expected the input guardrail to fire
+            per_src["BLOCKED"]["total"] += 1
+            per_src["BLOCKED"]["hit"] += int(blocked)
+            rows.append((c["name"][:48], exp, "BLK" if blocked else "-", "HIT" if blocked else "MISS"))
+        elif exp in ("A", "B", "C"):
             per_src[exp]["total"] += 1
             hit = exp in preds
             per_src[exp]["hit"] += int(hit)
@@ -96,15 +102,17 @@ def main(paths):
                 calib.append((float(x.get("confidence") or 0), x.get("source") == exp))
             rows.append((c["name"][:48], exp, ",".join(sorted(p for p in preds if p)) or "-",
                          "HIT" if hit else "MISS"))
+        else:
+            rows.append((c["name"][:48], exp, "?", "SKIP(unknown label)"))
 
     # ---- report ----
     print(f"\n{'CASE':50} {'EXP':4} {'PRED':8} RESULT")
     for name, exp, pred, res in rows:
         print(f"{name:50} {exp:4} {pred:8} {res}")
 
-    print("\n== recall by source ==")
+    print("\n== recall by class ==")
     total_hit = total = 0
-    for s in ("A", "B", "C"):
+    for s in LABELS:
         t, h = per_src[s]["total"], per_src[s]["hit"]
         total += t; total_hit += h
         if t:

@@ -49,15 +49,27 @@ GENESIS = "0" * 64
 # Mask obvious PII + credential values so the stored transcript can't itself become a leak.
 # Deliberately conservative (few false positives); tune per deployment.
 _REDACTORS = [
+    # PEM private-key blocks first (multiline, greedy within the block)
+    (re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", re.S), "[REDACTED:pem]"),
     (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "[REDACTED:email]"),
     (re.compile(r"\b(?:\+?\d[ -]?){10,15}\b"), "[REDACTED:phone]"),
     (re.compile(r"\b(?:\d[ -]?){13,19}\b"), "[REDACTED:card]"),           # card-like digit runs
     (re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b"), "[REDACTED:pan]"),            # India PAN shape
     (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[REDACTED:ssn]"),
-    (re.compile(r"(sk-[A-Za-z0-9-]{12,}|ghp_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}"
-                r"|AKIA[0-9A-Z]{12,}|eyJ[A-Za-z0-9_-]{18,}\.[A-Za-z0-9_-]+)"), "[REDACTED:secret]"),
-    (re.compile(r"(?i)\b(password|passwd|pwd|api[_ -]?key|secret|token|otp|cvv|pin)s?\b\s*"
-                r"(?:is|are|:|=)\s*['\"]?\S{3,}"), "[REDACTED:credential]"),
+    # known token prefixes + Bearer tokens
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{12,}=*"), "[REDACTED:bearer]"),
+    (re.compile(r"(sk-[A-Za-z0-9-]{12,}|ghp_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{16,}"
+                r"|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{12,}"
+                r"|eyJ[A-Za-z0-9_-]{18,}\.[A-Za-z0-9_-]+)"), "[REDACTED:secret]"),
+    # keyword -> value within a few tokens (not just immediately adjacent), catches
+    # "our secret access key is wJalrXUtn…" that the old adjacency rule missed
+    (re.compile(r"(?i)\b(password|passwd|pwd|api[_ -]?key|secret(?:[_ ]?access[_ ]?key)?|"
+                r"access[_ ]?key|token|credential|otp|cvv|pin)s?\b[\s:=]*(?:\w+\s+){0,3}['\"]?"
+                r"(?=\S*[A-Za-z0-9])\S{6,}"), "[REDACTED:credential]"),
+    # generic high-entropy token: long base64/hex-ish run (AWS secret keys, opaque tokens).
+    # Require mixed case + a digit WITHIN the base64 charset (not \w — that stops at '/').
+    (re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])"
+                r"(?=[A-Za-z0-9+/]*\d)[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/])"), "[REDACTED:highentropy]"),
 ]
 
 
@@ -106,27 +118,31 @@ class AuditLog:
         os.replace(tmp, self._chain_path)  # atomic index update
 
     # ---- scrub per mode ----------------------------------------------------
-    def _scrub(self, text: str):
+    def _scrub(self, text: str, mode: str | None = None):
+        m = mode or self.mode
         if not text:
             return text
-        if self.mode == "full":
+        if m == "full":
             return text
-        if self.mode == "hashed":
+        if m == "hashed":
             return "sha256:" + _sha256(text)
         return redact(text)  # default
 
-    def _scrub_correction(self, c: dict) -> dict:
+    def _scrub_correction(self, c: dict, mode: str | None = None) -> dict:
         c = dict(c)
         for k in ("quote_said", "quote_correct", "reason", "suggested_line"):
             if c.get(k):
-                c[k] = self._scrub(c[k])
+                c[k] = self._scrub(c[k], mode)
         return c
 
     # ---- write -------------------------------------------------------------
     def record(self, event: str, *, policy_version=None, model=None, lanes=None,
                latency_ms=None, utterance="", context="", prior="",
-               corrections=None, extra=None) -> dict | None:
+               corrections=None, extra=None, store_mode=None) -> dict | None:
         """Append one audit record. Returns the stored record (or None if disabled).
+
+        `store_mode` overrides AUDIT_STORE_MODE for THIS record (e.g. the input-block path
+        forces "hashed" because it already knows the input carries a secret).
 
         Raises only when AUDIT_FAIL_CLOSED=true; otherwise write errors are swallowed so a
         storage hiccup never takes down the request path ("the corrector should never die"),
@@ -136,14 +152,16 @@ class AuditLog:
         try:
             with self._lock:
                 return self._append(event, policy_version, model, lanes, latency_ms,
-                                    utterance, context, prior, corrections or [], extra or {})
+                                    utterance, context, prior, corrections or [], extra or {},
+                                    store_mode)
         except Exception:
             if self.fail_closed:
                 raise
             return None
 
     def _append(self, event, policy_version, model, lanes, latency_ms,
-                utterance, context, prior, corrections, extra) -> dict:
+                utterance, context, prior, corrections, extra, store_mode=None) -> dict:
+        mode = store_mode or self.mode
         now = datetime.now(timezone.utc)
         seq = self._chain["last_seq"] + 1
         prev_hash = self._chain["last_hash"]
@@ -157,14 +175,14 @@ class AuditLog:
             "model": model,
             "lanes": lanes,
             "latency_ms": latency_ms,
-            "store_mode": self.mode,
+            "store_mode": mode,
             "input": {
-                "utterance": self._scrub(utterance),
-                "context": self._scrub(context),
-                "prior_agent_claims": self._scrub(prior),
+                "utterance": self._scrub(utterance, mode),
+                "context": self._scrub(context, mode),
+                "prior_agent_claims": self._scrub(prior, mode),
                 "sha256": _sha256(raw_input),   # always present -> provable input match
             },
-            "corrections": [self._scrub_correction(c) for c in corrections],
+            "corrections": [self._scrub_correction(c, mode) for c in corrections],
             "outcome": {
                 "n_corrections": len(corrections),
                 "sources": sorted({c.get("source") for c in corrections if c.get("source")}),
