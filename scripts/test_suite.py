@@ -6,17 +6,35 @@ then asserts each case. Deterministic lanes (instant + input-guard) assert exact
 LLM lanes assert the expected SOURCE appears (tolerant of phrasing variance).
 Exit code = number of failures.
 """
-import json, os, sys, time, urllib.request
+import json, os, sys, time, urllib.request, urllib.error
 
 BASE = os.environ.get("BASE", "http://localhost:5244")
+KEY = os.environ.get("KEY", "")            # caller key (analyze / list)
+ADMIN_KEY = os.environ.get("ADMIN_KEY", KEY)  # admin key (upload / documents / audit)
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _post(path, data, text=False):
-    body, ctype = (data.encode(), "text/plain") if text else (json.dumps(data).encode(), "application/json")
-    req = urllib.request.Request(BASE + path, data=body, headers={"Content-Type": ctype})
+def _hdrs(admin=False, ctype=None):
+    h = {}
+    if ctype:
+        h["Content-Type"] = ctype
+    k = ADMIN_KEY if admin else KEY
+    if k:
+        h["X-API-Key"] = k
+    return h
+
+
+def _req(method, path, data=None, text=False, admin=False):
+    body = ctype = None
+    if data is not None:
+        body, ctype = (data.encode(), "text/plain") if text else (json.dumps(data).encode(), "application/json")
+    req = urllib.request.Request(BASE + path, data=body, method=method, headers=_hdrs(admin, ctype))
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.load(r)
+
+
+def _post(path, data, text=False, admin=False):
+    return _req("POST", path, data, text=text, admin=admin)
 
 
 def analyze(utterance, context="", prior=None):
@@ -60,11 +78,51 @@ CASES = [
 ]
 
 
+def _extra_checks():
+    """Smoke the newer surfaces: auth, multi-doc corpus (#5), audit (#1). Returns (passed,total)."""
+    checks = []
+
+    # auth: analyze without a key must be rejected when keys are configured
+    if KEY:
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                BASE + "/v1/corrector/analyze", data=b'{"agent_utterance":"hi"}',
+                headers={"Content-Type": "application/json"}), timeout=30)
+            checks.append(("auth: no-key analyze rejected", False))
+        except urllib.error.HTTPError as e:
+            checks.append(("auth: no-key analyze rejected", e.code == 401))
+
+    # multi-doc corpus: add a named doc, list, then delete it
+    try:
+        _post("/v1/policy/documents?name=zz_smoke", "# Prohibited Phrases\n- smoke phrase", text=True, admin=True)
+        docs = _req("GET", "/v1/policy/documents", admin=False)["documents"]
+        checks.append(("corpus: added doc appears in list", any(d["name"] == "zz_smoke" for d in docs)))
+        _req("DELETE", "/v1/policy/documents/zz_smoke", admin=True)
+        docs2 = _req("GET", "/v1/policy/documents", admin=False)["documents"]
+        checks.append(("corpus: deleted doc is gone", not any(d["name"] == "zz_smoke" for d in docs2)))
+    except Exception as e:
+        checks.append((f"corpus: endpoints ({str(e)[:40]})", False))
+
+    # audit: chain verifies (admin)
+    if ADMIN_KEY:
+        try:
+            v = _req("GET", "/v1/audit/verify", admin=True)
+            checks.append(("audit: chain verifies", v.get("ok") is True))
+        except Exception as e:
+            checks.append((f"audit: verify ({str(e)[:40]})", False))
+
+    p = 0
+    for name, ok in checks:
+        print(f"[{'PASS' if ok else 'FAIL'}] {name}")
+        p += ok
+    return p, len(checks)
+
+
 def main():
     h = _post_get("/healthz")
     print("health:", json.dumps(h))
     sop = open(os.path.join(HERE, "sample/sop-handbook.md")).read()
-    up = _post("/v1/policy/upload", sop, text=True)
+    up = _post("/v1/policy/upload", sop, text=True, admin=True)
     print("upload:", json.dumps(up), "\n" + "=" * 70)
     passed = 0
     for name, utt, ctx, prior, check, why in CASES:
@@ -81,13 +139,17 @@ def main():
             print(f"        expected: {why}")
             print(f"        got: {json.dumps(r.get('corrections', r))[:240]}")
         passed += ok
+    print("-" * 70 + "\nextra surfaces (auth / corpus / audit):")
+    ep, et = _extra_checks()
     print("=" * 70)
-    print(f"RESULT: {passed}/{len(CASES)} passed")
-    sys.exit(len(CASES) - passed)
+    total = len(CASES) + et
+    print(f"RESULT: {passed + ep}/{total} passed")
+    sys.exit(total - (passed + ep))
 
 
 def _post_get(path):
-    with urllib.request.urlopen(BASE + path, timeout=30) as r:
+    req = urllib.request.Request(BASE + path, headers=_hdrs())
+    with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
 
 

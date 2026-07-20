@@ -1,18 +1,25 @@
-"""Policy ingestion + retrieval (the RAG lane).
+"""Policy ingestion + retrieval (the RAG lane) — MULTI-DOCUMENT corpus.
 
-Chunk an uploaded policy/SOP markdown, embed locally (no egress), store in Chroma.
-Also extracts two machine-usable lists for the deterministic instant lane:
-  - prohibited phrases  (bullets under a heading matching /prohibit|banned|never say/i)
-  - required disclosures (bullets under a heading matching /required|mandatory|must (state|disclose)/i)
+Real enterprises don't have one SOP file — they have a security policy, a refunds policy, a
+KYC guide, per-product disclosures… This stores a **corpus of named markdown documents**:
+add / update / delete each independently; retrieval spans them all; every retrieved chunk is
+tagged with its source document so verdicts cite *which* policy. Prohibited-phrase and
+disclosure extraction is merged across documents.
 
-Everything runs on-prem: Chroma's default embedder is a local MiniLM ONNX model,
-persisted to disk (Lustre) so the index survives compute-node churn.
+Everything runs on-prem: Chroma's default embedder is a local MiniLM ONNX model, persisted
+to disk so the index survives restarts.
+
+Concurrency: index/delete and the policy_meta.json read/write are guarded by a lock, and the
+metadata file is written atomically (tmp + os.replace) so a concurrent `analyze` never reads
+a half-written file (which previously could 500 or yield an empty-policy false-negative).
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import threading
+import time
 from typing import List, Tuple
 
 import chromadb
@@ -23,6 +30,8 @@ _EMBED = embedding_functions.DefaultEmbeddingFunction()  # local MiniLM ONNX, ca
 
 _client = None
 _persist_dir = None
+_lock = threading.RLock()          # serialize corpus mutations + meta writes
+DEFAULT_DOC = "default"
 
 
 def init_store(persist_dir: str) -> None:
@@ -61,7 +70,6 @@ def _chunk(md: str, max_chars: int = 800) -> List[str]:
         if sum(len(x) for x in buf) > max_chars and ln.strip() == "":
             flush()
     flush()
-    # split any oversized chunk on sentence-ish boundaries
     out: List[str] = []
     for c in chunks:
         if len(c) <= max_chars * 1.5:
@@ -92,7 +100,6 @@ def _extract_rules(md: str) -> Tuple[List[str], List[dict]]:
     prohibited = _bullets_under(md, r"prohibit|banned|never say")
     disclosures = []
     for b in _bullets_under(md, r"required|mandatory|must (state|disclose)|disclosure"):
-        # optional "text | keywords: a, b" convention; else derive keywords from the text
         kw = re.search(r"keywords?:\s*(.+)$", b, re.I)
         keywords = [k.strip().lower() for k in kw.group(1).split(",")] if kw else []
         text = re.sub(r"\|?\s*keywords?:.*$", "", b, flags=re.I).strip()
@@ -100,41 +107,124 @@ def _extract_rules(md: str) -> Tuple[List[str], List[dict]]:
     return prohibited, disclosures
 
 
+# --- metadata (atomic) -------------------------------------------------------
+
+def _meta_path() -> str:
+    return os.path.join(_persist_dir or ".", "policy_meta.json")
+
+
+def _read_meta() -> dict:
+    p = _meta_path()
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        # missing OR mid-write/corrupt -> safe empty policy (never raise into the request path)
+        return {"version": "none", "documents": {}, "prohibited": [], "disclosures": []}
+
+
+def _write_meta(meta: dict) -> None:
+    p = _meta_path()
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(meta, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)   # atomic: a concurrent reader sees either the old or the new file
+
+
+def _rebuild_merged(meta: dict) -> None:
+    """Recompute the corpus-wide prohibited/disclosures from all documents."""
+    prohibited, seen, disclosures = [], set(), []
+    for doc in meta.get("documents", {}).values():
+        for ph in doc.get("prohibited", []):
+            if ph.lower() not in seen:
+                seen.add(ph.lower()); prohibited.append(ph)
+        disclosures.extend(doc.get("disclosures", []))
+    meta["prohibited"] = prohibited
+    meta["disclosures"] = disclosures
+
+
 # --- public API --------------------------------------------------------------
 
+def index_document(name: str, md: str, version: str | None = None) -> Tuple[int, List[str], List[dict]]:
+    """Add or REPLACE a single named document in the corpus (other docs untouched)."""
+    import hashlib
+    name = (name or DEFAULT_DOC).strip() or DEFAULT_DOC
+    with _lock:
+        col = _collection()
+        # replace this doc's chunks only
+        try:
+            col.delete(where={"doc_name": name})
+        except Exception:
+            pass
+        chunks = _chunk(md)
+        ver = version or f"v{int(time.time())}"
+        if chunks:
+            col.add(
+                ids=[f"{name}-{ver}-{i}" for i in range(len(chunks))],
+                documents=chunks,
+                metadatas=[{"doc_name": name, "version": ver, "idx": i} for i in range(len(chunks))],
+            )
+        prohibited, disclosures = _extract_rules(md)
+        meta = _read_meta()
+        meta.setdefault("documents", {})[name] = {
+            "version": ver, "sha256": hashlib.sha256(md.encode()).hexdigest(),
+            "chunks": len(chunks), "prohibited": prohibited, "disclosures": disclosures,
+        }
+        meta["version"] = ver          # corpus version bumps on any change
+        _rebuild_merged(meta)
+        _write_meta(meta)
+        return len(chunks), prohibited, disclosures
+
+
+def delete_document(name: str) -> bool:
+    """Remove one document from the corpus. Returns True if it existed."""
+    with _lock:
+        col = _collection()
+        try:
+            col.delete(where={"doc_name": name})
+        except Exception:
+            pass
+        meta = _read_meta()
+        existed = name in meta.get("documents", {})
+        meta.get("documents", {}).pop(name, None)
+        meta["version"] = f"v{int(time.time())}"
+        _rebuild_merged(meta)
+        _write_meta(meta)
+        return existed
+
+
+def list_documents() -> List[dict]:
+    meta = _read_meta()
+    return [{"name": n, "version": d.get("version"), "sha256": d.get("sha256"),
+             "chunks": d.get("chunks"), "prohibited": len(d.get("prohibited", [])),
+             "disclosures": len(d.get("disclosures", []))}
+            for n, d in meta.get("documents", {}).items()]
+
+
 def index_handbook(md: str, version: str) -> Tuple[int, List[str], List[dict]]:
-    col = _collection()
-    # wipe old policy so re-upload is a clean replace
-    try:
-        _client.delete_collection(_COLLECTION)
-    except Exception:
-        pass
-    col = _collection()
-    chunks = _chunk(md)
-    if chunks:
-        col.add(
-            ids=[f"{version}-{i}" for i in range(len(chunks))],
-            documents=chunks,
-            metadatas=[{"version": version, "idx": i} for i in range(len(chunks))],
-        )
-    prohibited, disclosures = _extract_rules(md)
-    meta = {"version": version, "prohibited": prohibited, "disclosures": disclosures}
-    with open(os.path.join(_persist_dir, "policy_meta.json"), "w") as f:
-        json.dump(meta, f, indent=2)
-    return len(chunks), prohibited, disclosures
+    """Back-compat single-file upload = REPLACE the whole corpus with one `default` document."""
+    with _lock:
+        try:
+            _client.delete_collection(_COLLECTION)   # wipe every document
+        except Exception:
+            pass
+        _write_meta({"version": "none", "documents": {}, "prohibited": [], "disclosures": []})
+        return index_document(DEFAULT_DOC, md, version)
 
 
 def retrieve(query: str, k: int = 4) -> List[str]:
     col = _collection()
     if col.count() == 0:
         return []
-    res = col.query(query_texts=[query], n_results=min(k, col.count()))
-    return res.get("documents", [[]])[0]
+    res = col.query(query_texts=[query], n_results=min(k, col.count()),
+                    include=["documents", "metadatas"])
+    docs = res.get("documents", [[]])[0]
+    metas = res.get("metadatas", [[]])[0] or [{}] * len(docs)
+    # tag each chunk with its source document so the judge can cite WHICH policy
+    return [f"[{(m or {}).get('doc_name', 'policy')}] {d}" for d, m in zip(docs, metas)]
 
 
 def load_policy_meta() -> dict:
-    p = os.path.join(_persist_dir or ".", "policy_meta.json")
-    if os.path.exists(p):
-        with open(p) as f:
-            return json.load(f)
-    return {"version": "none", "prohibited": [], "disclosures": []}
+    return _read_meta()

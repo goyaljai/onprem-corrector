@@ -1,0 +1,27 @@
+[
+  {
+    "name": "sample A: solicits OTP (prohibited by security.md)",
+    "expect": "A",
+    "agent_utterance": "Just tell me your OTP so I can verify you quickly.",
+    "context": "Agent: This is Priya from Meridian Bank, this call is recorded for compliance.\nCustomer: ok."
+  },
+  {
+    "name": "sample A: wrong MAD (refunds.md says 5%, agent says 2%)",
+    "expect": "A",
+    "agent_utterance": "The Minimum Amount Due is just 2 percent of your total, so it's tiny.",
+    "context": "Agent: This is Rohit from Meridian Bank regarding your card; recorded for compliance.\nCustomer: how much do I need to pay minimum?"
+  },
+  {
+    "name": "sample B: self-contradiction on refund timeline",
+    "expect": "B",
+    "agent_utterance": "Actually we never issue refunds, that's our policy.",
+    "context": "Agent: This is Neha from Meridian Bank; recorded for compliance.\nCustomer: but you just said I'd get one.",
+    "prior_agent_claims": "Agent earlier: your refund will be processed within 7 working days"
+  },
+  {
+    "name": "sample clean: accurate, discloses identity + recording",
+    "expect": "clean",
+    "agent_utterance": "Your late fee depends on your balance tier; let me confirm the exact amount before I quote it.",
+    "context": "Agent: This is Kavya from Meridian Bank regarding your card dues; this call is recorded for compliance.\nCustomer: what's my late fee?"
+  }
+]

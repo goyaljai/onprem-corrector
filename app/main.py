@@ -11,10 +11,12 @@ egress, which is the whole point (data residency).
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 import time
 import uuid
+import zipfile
 
 from fastapi import FastAPI, Request, Header, HTTPException, Query, Depends
 from openai import OpenAI
@@ -178,6 +180,60 @@ def policy_anchors(_auth=Depends(require("caller"))):
         ],
         "prohibited_phrases": meta.get("prohibited", []),
     }
+
+
+# ---- multi-document policy corpus (#5) ----
+@app.post("/v1/policy/documents", response_model=UploadResponse, tags=["policy"],
+          summary="Add/replace ONE named policy document (leaves other docs intact) — admin")
+async def upsert_document(request: Request, name: str = Query(..., description="document name/id"),
+                          _auth=Depends(require("admin"))):
+    raw = (await request.body()).decode("utf-8")
+    prev = rag_index.load_policy_meta().get("version")
+    n, prohibited, disclosures = rag_index.index_document(name, raw)
+    ver = rag_index.load_policy_meta().get("version")
+    get_audit().record("policy_upload", policy_version=ver, model=MODEL_NAME,
+                       extra={"prev_version": prev, "document": name,
+                              "policy_sha256": hashlib.sha256(raw.encode()).hexdigest(), "chunks": n})
+    return UploadResponse(policy_version=ver, chunks_indexed=n,
+                          prohibited_phrases=len(prohibited), required_disclosures=len(disclosures))
+
+
+@app.get("/v1/policy/documents", tags=["policy"], summary="List documents in the policy corpus")
+def list_documents(_auth=Depends(require("caller"))):
+    return {"policy_version": rag_index.load_policy_meta().get("version"),
+            "documents": rag_index.list_documents()}
+
+
+@app.delete("/v1/policy/documents/{name}", tags=["policy"],
+            summary="Delete one document from the corpus — admin")
+def delete_document(name: str, _auth=Depends(require("admin"))):
+    if not rag_index.delete_document(name):
+        raise HTTPException(status_code=404, detail=f"No such document: {name}")
+    ver = rag_index.load_policy_meta().get("version")
+    get_audit().record("policy_upload", policy_version=ver, model=MODEL_NAME,
+                       extra={"deleted_document": name})
+    return {"deleted": name, "policy_version": ver}
+
+
+@app.post("/v1/policy/bulk", tags=["policy"],
+          summary="Bulk-load a ZIP of .md documents (convert-everything-to-md) — admin")
+async def bulk_upload(request: Request, _auth=Depends(require("admin"))):
+    raw = await request.body()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Body must be a ZIP archive of .md files.")
+    loaded = []
+    for info in zf.infolist():
+        if info.is_dir() or not info.filename.lower().endswith((".md", ".markdown", ".txt")):
+            continue
+        doc = os.path.splitext(os.path.basename(info.filename))[0]
+        n, _p, _d = rag_index.index_document(doc, zf.read(info).decode("utf-8", errors="replace"))
+        loaded.append({"name": doc, "chunks": n})
+    ver = rag_index.load_policy_meta().get("version")
+    get_audit().record("policy_upload", policy_version=ver, model=MODEL_NAME,
+                       extra={"bulk": True, "documents": [d["name"] for d in loaded]})
+    return {"policy_version": ver, "loaded": loaded, "count": len(loaded)}
 
 
 @app.post("/v1/corrector/analyze", response_model=AnalyzeResponse, tags=["compliance"],
