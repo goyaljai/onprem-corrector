@@ -22,7 +22,8 @@ RUN pip install -r requirements.txt
 
 COPY app ./app
 COPY sample ./sample
-COPY scripts ./scripts    # egress_check.py, gen_sbom.py, test_* — usable via `docker exec`
+# egress_check.py / gen_sbom.py / test_* usable via `docker exec` (no inline comment on COPY!)
+COPY scripts ./scripts
 
 # Config via env (see ../.env.example). In compose/k8s the corrector reaches vLLM by
 # service name; POLICY_DIR is a mounted volume so the index survives restarts.
