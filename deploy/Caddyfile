@@ -12,9 +12,13 @@
 	}
 }
 
-# Have a public domain pointed at this box and want a real trusted cert (Let's Encrypt)
-# instead? See Caddyfile.acme.example — replace this file's contents with that pattern.
-:8443 {
+# A HOSTLESS address (":8443") makes Caddy treat cert issuance as ON-DEMAND-per-SNI, which
+# it refuses by default without an explicit `on_demand_tls` permission policy (a safety
+# guard against unbounded cert issuance) — every handshake then fails with a TLS
+# "internal_error" alert before your request is even seen. Naming the host(s) explicitly
+# makes Caddy issue the cert eagerly at startup instead. Add any other hostname/IP you use
+# to reach this box as extra comma-separated addresses below.
+localhost:8443 {
 	tls internal
 	reverse_proxy corrector:5244
 }
