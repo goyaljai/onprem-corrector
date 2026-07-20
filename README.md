@@ -9,7 +9,9 @@ conversation and catches — or fixes — the moment an agent breaks **your** po
 **your** hardware, on **your** model, grounded in **your** SOP. The customer transcript and your
 policy documents **never leave your premises.**
 
-![data](https://img.shields.io/badge/data-sovereign-blueviolet) ![egress](https://img.shields.io/badge/egress-none-brightgreen) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-3.10+-blue) ![deploy](https://img.shields.io/badge/deploy-Docker%20%C2%B7%20K8s%20%C2%B7%20GCP%2FAWS%2FAzure-orange)
+![data](https://img.shields.io/badge/data-sovereign-blueviolet) ![egress](https://img.shields.io/badge/egress-none-brightgreen) ![status](https://img.shields.io/badge/status-production--ready%20v1.0-success) ![audit](https://img.shields.io/badge/audit-tamper--evident-informational) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-3.10+-blue) ![deploy](https://img.shields.io/badge/deploy-Docker%20%C2%B7%20K8s%20%C2%B7%20GCP%2FAWS%2FAzure-orange)
+
+> **v1.0 — production-ready.** Tamper-evident audit trail · role-based auth + enforced zero-egress · multi-document policy corpus · measured accuracy (100% recall on the labeled packs) · two adversarial audits with all findings fixed. Verified end-to-end on a GCP 2× L4 box.
 
 </div>
 
@@ -92,6 +94,8 @@ flowchart LR
 - 🧾 **Tamper-evident audit trail** — every verdict/policy-change is hash-chained (append-only), PII-redacted, retention-configurable, and verifiable **offline** (`GET /v1/audit/verify` pin-points any tampering). Compliance evidence, not a promise.
 - 📖 **Self-describing API** — interactive Swagger UI at `/docs`, ReDoc at `/redoc`, spec at `/openapi.json`.
 - 🔑 **Locked down for prod** — role-based API keys (caller vs admin), rate limiting, **enforced** zero-egress (k8s NetworkPolicy / docker internal-network + an `egress_check` proof), TLS guidance, and a CycloneDX SBOM. Open by default for the demo, hard by one env var.
+- 📚 **Multi-document policy corpus** — real enterprises have many policies, not one file: add/update/delete named docs independently, or bulk-load a **ZIP of markdown**; verdicts **cite which document**.
+- 📈 **Measured, not vibes** — an eval harness scores recall / false-positive-rate / latency on labeled packs and **calibrates the gate** from data (100% recall, gate 0.80 validated on the sample packs).
 - 📦 **Runs out-of-the-box** — ships a default sample SOP and auto-loads it, so `/analyze` works before you upload anything.
 - ☁️ **Deploy anywhere** — Docker Compose · Kubernetes · GCP / AWS / Azure recipes; weights mounted or pulled at runtime, never baked into an image; no secrets in the repo.
 - ✅ **Proven** — bundled adversarial packs (bank · hospital · IT) with planted mistakes; a GPU-free unit test; verified end-to-end on H100.
@@ -148,7 +152,9 @@ the SOP you give it. To adapt it to *your* product:
    phrases** (`## Prohibited Phrases`) and **required disclosures** (`## Required Disclosures`, add
    `| keywords: a, b, c` to anchor each). See [`sample/sop-handbook.md`](sample/sop-handbook.md) and the
    worked [`packs/`](packs/) (bank · hospital · IT).
-2. **Upload it** (replaces the default): `curl -X POST :5244/v1/policy/upload --data-binary @your-sop.md`
+2. **Upload it.** One file replaces the corpus: `curl -X POST :5244/v1/policy/upload --data-binary @your-sop.md`.
+   Many files? Add them independently — `curl -X POST ':5244/v1/policy/documents?name=refunds' --data-binary @refunds.md`
+   — or bulk-load a **ZIP** of markdown: `curl -X POST :5244/v1/policy/bulk --data-binary @policies.zip`. (Admin key required.)
 3. **Call `/v1/corrector/analyze`** from your agent loop with the latest line + context. Map the
    `corrections[]` onto your UI / voice / audit log (contract in [`docs/API.md`](docs/API.md)).
 4. **Swap the model** if you like — point `VLLM_BASE_URL` at any OpenAI-compatible vLLM serving any
@@ -162,10 +168,12 @@ KYC, IT-support MFA policy, legal disclaimers… if it has an SOP, it works.
 | Endpoint | What it does |
 |---|---|
 | `GET /healthz` | liveness + served model + policy version |
-| `POST /v1/policy/upload` | index your SOP markdown (RAG + extract phrases/disclosures) |
+| `POST /v1/policy/upload` | index one SOP markdown (replaces the corpus with a `default` doc) |
+| `POST /v1/policy/documents?name=` · `GET` · `DELETE /{name}` | **multi-document corpus** — add/update/list/delete named policy docs independently |
+| `POST /v1/policy/bulk` | bulk-load a **ZIP of `.md`** docs (convert-everything-to-md → upload once) |
 | `POST /v1/corrector/analyze` | judge one utterance → `{observations, corrections[], rubric_projection}` |
 | `GET /v1/policy/anchors` | SOP-derived disclosure anchors (reuse them in your own identity checks) |
-| `GET /v1/audit` · `/verify` · `/stats` | tamper-evident audit trail — query, integrity proof, stats (key-gated) |
+| `GET /v1/audit` · `/verify` · `/stats` | tamper-evident audit trail — query, integrity proof, stats (admin-gated) |
 | `GET /docs` · `/redoc` · `/openapi.json` | interactive **Swagger UI** / ReDoc / machine spec — the API describes itself |
 
 Full request/response shapes → [`docs/API.md`](docs/API.md), or just open **`/docs`** on a running instance.
@@ -180,10 +188,18 @@ are **never baked into the image** — mounted or pulled at runtime.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
-python scripts/test_judge_confidence.py                                    # GPU-free unit test
-BASE=http://localhost:5244 python scripts/test_suite.py                    # live acceptance (10 cases)
-BASE=http://localhost:5244 SOP=packs/bank.md TR=packs/bank.json python scripts/test_domain.py  # adversarial (10)
+# GPU-free unit tests (no model / network needed):
+python scripts/test_audit.py        # tamper-evident audit chain (16 checks)
+python scripts/test_auth.py         # role-based auth + rate limit (13)
+python scripts/test_bugfixes.py     # regression: B-quote grounding + secret redaction (12)
+python scripts/test_judge_confidence.py
+
+# live acceptance against a running corrector (KEY/ADMIN_KEY if auth is on):
+BASE=http://localhost:5244 KEY=caller-key ADMIN_KEY=admin-key python scripts/test_suite.py       # 14 checks
+BASE=http://localhost:5244 KEY=caller-key ADMIN_KEY=admin-key python scripts/test_rag_corpus.py  # multi-doc corpus (14)
+BASE=http://localhost:5244 KEY=caller-key python scripts/eval.py packs/*.json                    # metrics + gate calibration
 ```
+Verified live end-to-end on a **GCP 2× L4** box: 14/14 acceptance, 14/14 corpus, 100% recall on labeled packs.
 
 ## Stack
 

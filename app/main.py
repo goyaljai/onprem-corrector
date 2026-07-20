@@ -43,7 +43,7 @@ TAGS = [
 ]
 app = FastAPI(
     title="On-prem Policy-Compliance Guardrail",
-    version="0.2.0",
+    version="1.0.0",
     description=(
         "A self-hosted, **zero-egress** compliance corrector for AI/human agents. Detects "
         "policy breaches (A), self-contradiction (B), and tone misses (C), grounded in *your* "
