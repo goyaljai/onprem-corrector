@@ -148,20 +148,20 @@ def _rebuild_merged(meta: dict) -> None:
 # --- public API --------------------------------------------------------------
 
 def index_document(name: str, md: str, version: str | None = None) -> Tuple[int, List[str], List[dict]]:
-    """Add or REPLACE a single named document in the corpus (other docs untouched)."""
+    """Add or REPLACE a single named document in the corpus (other docs untouched).
+
+    ADD-THEN-DELETE so a lock-free concurrent `analyze` never sees this doc empty mid-update:
+    the new-version chunks are upserted first, the corpus metadata is swapped atomically, and
+    only THEN are the doc's old-version chunks removed. Retrieval always returns valid policy
+    (old or new), never an empty set that would yield a false-negative 'clean' verdict."""
     import hashlib
     name = (name or DEFAULT_DOC).strip() or DEFAULT_DOC
     with _lock:
         col = _collection()
-        # replace this doc's chunks only
-        try:
-            col.delete(where={"doc_name": name})
-        except Exception:
-            pass
         chunks = _chunk(md)
         ver = version or f"v{int(time.time())}"
-        if chunks:
-            col.add(
+        if chunks:                                   # 1) upsert NEW chunks (unique per version)
+            col.upsert(
                 ids=[f"{name}-{ver}-{i}" for i in range(len(chunks))],
                 documents=chunks,
                 metadatas=[{"doc_name": name, "version": ver, "idx": i} for i in range(len(chunks))],
@@ -174,7 +174,11 @@ def index_document(name: str, md: str, version: str | None = None) -> Tuple[int,
         }
         meta["version"] = ver          # corpus version bumps on any change
         _rebuild_merged(meta)
-        _write_meta(meta)
+        _write_meta(meta)              # 2) atomic swap of the corpus metadata
+        try:                           # 3) NOW drop this doc's stale (old-version) chunks
+            col.delete(where={"$and": [{"doc_name": name}, {"version": {"$ne": ver}}]})
+        except Exception:
+            pass
         return len(chunks), prohibited, disclosures
 
 
@@ -211,23 +215,23 @@ def index_handbook(md: str, version: str) -> Tuple[int, List[str], List[dict]]:
     return a false-negative 'clean' on a real breach."""
     import hashlib
     with _lock:
-        try:
-            _client.delete_collection(_COLLECTION)   # wipe every document
-        except Exception:
-            pass
         col = _collection()
         chunks = _chunk(md)
         ver = version or f"v{int(time.time())}"
-        if chunks:
-            col.add(ids=[f"{DEFAULT_DOC}-{ver}-{i}" for i in range(len(chunks))],
-                    documents=chunks,
-                    metadatas=[{"doc_name": DEFAULT_DOC, "version": ver, "idx": i} for i in range(len(chunks))])
+        if chunks:                                   # 1) upsert the new default-doc chunks
+            col.upsert(ids=[f"{DEFAULT_DOC}-{ver}-{i}" for i in range(len(chunks))],
+                       documents=chunks,
+                       metadatas=[{"doc_name": DEFAULT_DOC, "version": ver, "idx": i} for i in range(len(chunks))])
         prohibited, disclosures = _extract_rules(md)
         meta = {"version": ver, "documents": {DEFAULT_DOC: {
             "version": ver, "sha256": hashlib.sha256(md.encode()).hexdigest(),
             "chunks": len(chunks), "prohibited": prohibited, "disclosures": disclosures}}}
         _rebuild_merged(meta)
-        _write_meta(meta)              # ONE atomic swap old-corpus -> new-corpus
+        _write_meta(meta)              # 2) ONE atomic swap old-corpus -> new-corpus metadata
+        try:                           # 3) NOW purge every chunk that isn't the new version
+            col.delete(where={"version": {"$ne": ver}})
+        except Exception:
+            pass
         return len(chunks), prohibited, disclosures
 
 

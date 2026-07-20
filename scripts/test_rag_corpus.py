@@ -105,6 +105,15 @@ def main():
     except urllib.error.HTTPError as e:
         check("404 on missing doc", e.code == 404)
 
+    print("7b. bulk with same-basename files in different folders must NOT collide")
+    cbuf = io.BytesIO()
+    with zipfile.ZipFile(cbuf, "w") as z:
+        z.writestr("security/policy.md", "# Prohibited Phrases\n- collide alpha")
+        z.writestr("refunds/policy.md", "# Prohibited Phrases\n- collide beta")
+    cres = req("POST", "/v1/policy/bulk", cbuf.getvalue(), admin=True, raw=True, ctype="application/zip")
+    cnames = {d["name"] for d in cres.get("loaded", [])}
+    check("both same-basename docs kept as distinct", len(cnames) == 2, str(cnames))
+
     print("8. back-compat: single upload REPLACES the whole corpus with 'default'")
     sop = open(os.path.join(HERE, "sample", "sop-handbook.md")).read()
     req("POST", "/v1/policy/upload", sop, admin=True, raw=True, ctype="text/plain")

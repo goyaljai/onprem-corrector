@@ -223,17 +223,29 @@ async def bulk_upload(request: Request, _auth=Depends(require("admin"))):
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except Exception:
         raise HTTPException(status_code=400, detail="Body must be a ZIP archive of .md files.")
-    loaded = []
+    # DoS guards: bound entry count + per-entry and total DECOMPRESSED size (zip-bomb defense).
+    MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL = 500, 5_000_000, 50_000_000
+    loaded, skipped, seen, total = [], [], set(), 0
     for info in zf.infolist():
         if info.is_dir() or not info.filename.lower().endswith((".md", ".markdown", ".txt")):
             continue
-        doc = os.path.splitext(os.path.basename(info.filename))[0]
+        if len(loaded) >= MAX_ENTRIES:
+            skipped.append({"file": info.filename, "reason": "entry cap"}); continue
+        if info.file_size > MAX_ENTRY or total + info.file_size > MAX_TOTAL:
+            skipped.append({"file": info.filename, "reason": "size cap"}); continue
+        # key on the sanitized FULL path (not basename) so security/x.md and refunds/x.md
+        # don't collide and silently overwrite each other.
+        doc = os.path.splitext(info.filename)[0].strip("/").replace("/", "__").replace("\\", "__")
+        if doc in seen:
+            skipped.append({"file": info.filename, "reason": "duplicate name"}); continue
+        seen.add(doc)
+        total += info.file_size
         n, _p, _d = rag_index.index_document(doc, zf.read(info).decode("utf-8", errors="replace"))
         loaded.append({"name": doc, "chunks": n})
     ver = rag_index.load_policy_meta().get("version")
     get_audit().record("policy_upload", policy_version=ver, model=MODEL_NAME,
-                       extra={"bulk": True, "documents": [d["name"] for d in loaded]})
-    return {"policy_version": ver, "loaded": loaded, "count": len(loaded)}
+                       extra={"bulk": True, "documents": [d["name"] for d in loaded], "skipped": len(skipped)})
+    return {"policy_version": ver, "loaded": loaded, "skipped": skipped, "count": len(loaded)}
 
 
 @app.post("/v1/corrector/analyze", response_model=AnalyzeResponse, tags=["compliance"],
