@@ -204,14 +204,31 @@ def list_documents() -> List[dict]:
 
 
 def index_handbook(md: str, version: str) -> Tuple[int, List[str], List[dict]]:
-    """Back-compat single-file upload = REPLACE the whole corpus with one `default` document."""
+    """Back-compat single-file upload = REPLACE the whole corpus with one `default` document.
+
+    Metadata is swapped in a SINGLE atomic write at the end — we never persist an empty
+    interim policy, so a concurrent `analyze` can't observe a momentarily-blank corpus and
+    return a false-negative 'clean' on a real breach."""
+    import hashlib
     with _lock:
         try:
             _client.delete_collection(_COLLECTION)   # wipe every document
         except Exception:
             pass
-        _write_meta({"version": "none", "documents": {}, "prohibited": [], "disclosures": []})
-        return index_document(DEFAULT_DOC, md, version)
+        col = _collection()
+        chunks = _chunk(md)
+        ver = version or f"v{int(time.time())}"
+        if chunks:
+            col.add(ids=[f"{DEFAULT_DOC}-{ver}-{i}" for i in range(len(chunks))],
+                    documents=chunks,
+                    metadatas=[{"doc_name": DEFAULT_DOC, "version": ver, "idx": i} for i in range(len(chunks))])
+        prohibited, disclosures = _extract_rules(md)
+        meta = {"version": ver, "documents": {DEFAULT_DOC: {
+            "version": ver, "sha256": hashlib.sha256(md.encode()).hexdigest(),
+            "chunks": len(chunks), "prohibited": prohibited, "disclosures": disclosures}}}
+        _rebuild_merged(meta)
+        _write_meta(meta)              # ONE atomic swap old-corpus -> new-corpus
+        return len(chunks), prohibited, disclosures
 
 
 def retrieve(query: str, k: int = 4) -> List[str]:
